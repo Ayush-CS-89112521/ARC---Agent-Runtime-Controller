@@ -3,6 +3,8 @@ import { describe, it, expect, beforeEach, afterEach, spyOn, mock, beforeAll } f
 import { SafetyViolation } from '../../src/types/index';
 import { ToolDescriptor } from '../../src/types/tool-discovery';
 
+mock.module('../../src/interactive/editor-process.js', () => ({ launchEditor: async () => {} }));
+
 // Mock console to keep output clean
 const logSpy = spyOn(console, 'log').mockImplementation(() => { });
 const clearSpy = spyOn(console, 'clear').mockImplementation(() => { });

@@ -3,7 +3,7 @@
  * Dynamic Tool Registry Indexer
  * 
  * Parses .data/public_api/README.md and generates data/api-registry.json
- * with type-safe, searchable indexes for CWC integration.
+ * with type-safe, searchable indexes for ARC integration.
  * 
  * Usage: bun run scripts/index-apis.ts [--validate-links]
  */

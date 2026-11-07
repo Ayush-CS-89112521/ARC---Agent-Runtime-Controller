@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { ResourceWatchdog, captureProcessMetrics } from '../../src/execution/resource-watchdog';
+import { ResourceWatchdog, captureProcessMetrics, spawnMonitored } from '../../src/execution/resource-watchdog';
 import { ResourceAlert } from '../../src/types/index';
 
 describe('Resource Watchdog - Metrics Capture', () => {
@@ -182,18 +182,40 @@ describe('Resource Watchdog - Stop & Cleanup', () => {
 });
 
 describe('Resource Watchdog - Real-World Scenarios', () => {
-  // Tests disabled due to potential hangs in CI/Test environment
-  it.skip('should detect infinite loop pattern (high CPU sustained)', () => {
-    // ...
-  });
+  async function measure(name: string, script: string, limits: { cpuWarnPercent: number; maxHighResourceReadings: number }) {
+    const result = await spawnMonitored([process.execPath, '-e', script], {
+      memoryMB: 384, checkIntervalMs: 550, ...limits,
+    }, { signal: AbortSignal.timeout(14000) });
+    console.log(JSON.stringify({ scenario: name, exitCode: result.exitCode, alerts: result.alerts }));
+    return result;
+  }
 
-  it.skip('should detect memory leak pattern (consistent growth)', () => {
-    // ...
-  });
+  it('should detect a bounded high CPU workload and terminate its process', async () => {
+    const result = await measure('cpu', 'const end = Date.now() + 7000; while (Date.now() < end) Math.sqrt(Date.now());',
+      { cpuWarnPercent: 25, maxHighResourceReadings: 2 });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.alerts.some(alert => alert.message.includes('Sustained high CPU') && alert.actualValue > 25)).toBe(true);
+  }, 18000);
 
-  it.skip('should allow normal AI processing without false positives', () => {
-    // ...
-  });
+  it('should detect memory leak pattern (consistent growth)', async () => {
+    const result = await measure('growth', `
+      const buffers = []; let samples = 0;
+      const timer = setInterval(() => {
+        buffers.push(Buffer.alloc(5 * 1024 * 1024, 77));
+        if (++samples === 12) clearInterval(timer);
+      }, 440);
+    `, { cpuWarnPercent: 100, maxHighResourceReadings: 2 });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.alerts.some(alert => alert.message.includes('Memory leak detected'))).toBe(true);
+  }, 18000);
+
+  it('should allow a normal bounded child to complete without false positives', async () => {
+    const result = await measure('normal', 'setTimeout(() => console.log("finished"), 1700)',
+      { cpuWarnPercent: 80, maxHighResourceReadings: 2 });
+    expect(result.exitCode).toBe(0);
+    expect(result.output.trim()).toBe('finished');
+    expect(result.alerts.some(alert => alert.message.startsWith('🛑'))).toBe(false);
+  }, 18000);
 });
 
 describe('Resource Watchdog - Error Recovery', () => {

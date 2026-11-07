@@ -1,7 +1,7 @@
-name: CWC Red Team Attack Vectors
+name: ARC Red Team Attack Vectors
 version: '1.0'
 description: |
-  8 Executable red team attack scenarios for Copilot Workflow Composer
+  8 Executable red team attack scenarios for Agent Runtime Controller
   Tests the 5-layer safety architecture against real obfuscation techniques
   Expected: 100% detection rate, 0 false positives
   Execution modes: interactive, CI (auto-deny), validation (inspect audit trail)
@@ -473,6 +473,6 @@ interpretationGuide: |
   - Low confidence: Insufficient indicators - consider context multipliers
   
   This test suite proves the claim:
-  "CWC detects all instances of 6 fundamental attack vectors
+  "ARC detects all instances of 6 fundamental attack vectors
   with combined confidence >= 0.998. Every dangerous command
   is either blocked or escalated to human review."

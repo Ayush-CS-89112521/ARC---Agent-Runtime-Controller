@@ -412,9 +412,9 @@ function compare(left: unknown, operator: string, right: unknown): boolean {
     case '!==':
       return left !== right;
     case '==':
-      return left == right; // eslint-disable-line eqeqeq
+      return left == right;
     case '!=':
-      return left != right; // eslint-disable-line eqeqeq
+      return left != right;
     case '<':
       return (left as number) < (right as number);
     case '>':

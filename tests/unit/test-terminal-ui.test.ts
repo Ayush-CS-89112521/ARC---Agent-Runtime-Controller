@@ -58,7 +58,7 @@ describe('TerminalUI', () => {
 
         it('should create a separator', () => {
             const sep = TerminalUI.frame.separator(10);
-            expect(sep.length).toBeGreaterThan(10); // Length + ANSI codes
+            expect(sep.replace(/\x1b\[[0-9;]*m/g, '')).toBe('─'.repeat(10));
         });
 
         it('should create a header', () => {

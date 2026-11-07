@@ -10,7 +10,7 @@
  */
 
 import inquirer from 'inquirer';
-import { spawn } from 'bun';
+import { launchEditor } from './editor-process.js';
 import { tmpdir } from 'os';
 import { writeFileSync, readFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
@@ -103,7 +103,7 @@ function formatArgs(args: string): string {
  */
 export async function editArgumentsInteractively(originalArgs: string): Promise<string> {
   const editor = process.env.EDITOR || 'vim';
-  const tempFile = join(tmpdir(), `cwc-args-${Date.now()}.txt`);
+  const tempFile = join(tmpdir(), `arc-args-${Date.now()}.txt`);
 
   try {
     // Write original args to temp file
@@ -111,8 +111,7 @@ export async function editArgumentsInteractively(originalArgs: string): Promise<
 
     // Launch editor
     console.log(`📝 Opening ${editor} to edit arguments...`);
-    const result = spawn([editor, tempFile]);
-    await result.exited;
+    await launchEditor(editor, tempFile);
 
     // Read modified version
     const modifiedArgs = readFileSync(tempFile, 'utf-8');

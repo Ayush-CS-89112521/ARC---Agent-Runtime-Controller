@@ -1,0 +1,15 @@
+name: arc-temporal-test
+services:
+  temporal:
+    # Official CLI 1.10.0 / Server 1.32.2, pinned to the downloaded image digest.
+    image: temporalio/temporal@sha256:003508da05989e7cf0d583cfce521c4bb2732e733574e3040db8f1284783baa2
+    user: "0:0" # Isolated dev server needs write access to its dedicated named volume.
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--port", "7233", "--ui-port", "8233", "--namespace", "arc-test", "--db-filename", "/data/temporal.db"]
+    ports:
+      - "127.0.0.1:17233:7233"
+      - "127.0.0.1:18233:8233"
+    volumes:
+      - temporal-test-data:/data
+    restart: "no"
+volumes:
+  temporal-test-data:

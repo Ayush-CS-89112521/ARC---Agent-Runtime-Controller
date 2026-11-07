@@ -1,4 +1,4 @@
-# CWC Hero GIF - Storyboard to VHS
+# ARC Hero GIF - Storyboard to VHS
 # Duration: 15 seconds
 # Resolution: 1280x720
 # Frame Rate: 30 FPS
@@ -23,7 +23,7 @@ Type "╔═══════════════════════�
 Sleep 100ms
 Type ""
 Sleep 100ms
-Type "║  Copilot Workflow Composer (CWC)                                          ║"
+Type "║  Agent Runtime Controller (ARC)                                          ║"
 Sleep 200ms
 Type ""
 Sleep 100ms
@@ -39,7 +39,7 @@ Type "╚═══════════════════════�
 Sleep 1200ms
 
 # ============================================================================
-# SCENE 2: CWC INIT COMMAND (2-4s)
+# SCENE 2: ARC INIT COMMAND (2-4s)
 # ============================================================================
 
 Clear
@@ -47,7 +47,7 @@ Type "# Step 1: Initialize a secure workflow project"
 Sleep 200ms
 Enter
 Enter
-Type "$ cwc init demo-project"
+Type "$ arc init demo-project"
 Sleep 150ms
 Enter
 Sleep 300ms
@@ -94,7 +94,7 @@ Type "# Step 2: Execute workflow with 8-layer safety verification"
 Sleep 200ms
 Enter
 Enter
-Type "$ cwc workflows/workflow.yaml"
+Type "$ arc workflows/workflow.yaml"
 Sleep 150ms
 Enter
 Sleep 300ms
@@ -227,7 +227,7 @@ Enter
 Type "Ready for production. Try it:"
 Sleep 100ms
 Enter
-Type "  npm install -g copilot-workflow-composer"
+Type "  npm ci"
 Sleep 100ms
 Enter
 Sleep 800ms

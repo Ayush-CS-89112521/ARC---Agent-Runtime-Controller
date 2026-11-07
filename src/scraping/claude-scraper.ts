@@ -32,10 +32,10 @@ export class ClaudeScraper {
 
     private async getAnthropic() {
         if (!this.anthropic) {
+            const apiKey = process.env.ANTHROPIC_API_KEY;
+            if (!apiKey?.trim()) throw new Error('ANTHROPIC_API_KEY is required for documentation extraction');
             const Anthropic = (await import('@anthropic-ai/sdk')).default;
-            this.anthropic = new Anthropic({
-                apiKey: process.env.ANTHROPIC_API_KEY || process.env.GITHUB_TOKEN
-            });
+            this.anthropic = new Anthropic({ apiKey });
         }
         return this.anthropic;
     }
@@ -137,7 +137,7 @@ Focus on ${topic} specifically. Return ONLY valid JSON, no markdown formatting.`
 
             const response = await fetch(searchUrl, {
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (compatible; CWC-Bot/1.0)'
+                    'User-Agent': 'Mozilla/5.0 (compatible; ARC-Bot/1.0)'
                 }
             });
 

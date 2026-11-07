@@ -3,12 +3,16 @@
  * 
  * Provides an intelligent persistence layer for workflow context retrieval.
  * Features:
- * - Hybrid storage: PostgreSQL with pgvector for production; SQLite/In-Memory for portability.
+ * - PostgreSQL with pgvector and an in-memory connection fallback.
  * - Semantic search: Vector-based similarity matching for error recovery and tool discovery.
- * - Automatic indexing: Self-optimizing schema and IVFFlat index management.
+ * - Ranked retrieval within a corpus and embedding model.
  */
 
 import { Client } from 'pg';
+import { createHash } from 'node:crypto';
+import { getLocalEmbeddingProvider, type EmbeddingProvider } from './local-embedding.js';
+import { z } from 'zod';
+import { maskGenericSecrets } from '../safety/secret-masker.js';
 import type { WorkflowExecutionResult } from '../types/index.js';
 
 export interface KnowledgeEntry {
@@ -22,6 +26,10 @@ export interface KnowledgeEntry {
         tags: string[];
         confidence?: number;
         success?: boolean;
+        chunk?: number;
+        documentId?: string;
+        corpus?: string;
+        embeddingModel?: string;
     };
 }
 
@@ -31,17 +39,58 @@ export interface QueryResult {
     metadata: KnowledgeEntry['metadata'];
 }
 
+/** Keep retrieved text and its attribution together when passing it to a planner. */
+export function assembleRetrievedContext(results: readonly QueryResult[]): string {
+    if (results.length === 0) return '';
+    return JSON.stringify(results.slice(0, 3).map((result, index) => ({
+        citation: index + 1,
+        source: maskGenericSecrets(result.metadata.source).masked,
+        documentId: result.metadata.documentId,
+        corpus: result.metadata.corpus,
+        embeddingModel: result.metadata.embeddingModel,
+        chunk: result.metadata.chunk,
+        content: maskGenericSecrets(result.content).masked.slice(0, 600),
+    })));
+}
+
+const label = z.string().trim().min(1).max(128).regex(/^[a-zA-Z0-9._:-]+$/);
+const metadataSchema = z.object({
+    type: z.enum(['workflow', 'error', 'documentation', 'tool', 'web-scraped']),
+    source: z.string().min(1).max(512).refine(source => !/[\x00-\x1f\x7f]/.test(source)),
+    timestamp: z.date(),
+    tags: z.array(z.string().min(1).max(128).refine(tag => !/[\x00-\x1f\x7f]/.test(tag))).max(64),
+    confidence: z.number().min(0).max(1).optional(),
+    success: z.boolean().optional(),
+});
+const MAX_DOCUMENT_BYTES = 128 * 1024;
+const MAX_QUERY_BYTES = 16 * 1024;
+
+export interface KnowledgeBaseOptions {
+    corpus?: string;
+    embedding?: { id: string; generate: (text: string) => Promise<number[]> };
+}
+
 export class KnowledgeBase {
     private client: Client;
-    private embeddingCache: Map<string, number[]>;
-    private isMemoryMode: boolean = false;
-    private memoryEntries: KnowledgeEntry[] = [];
+    private isMemoryMode = false;
+    private memoryEntries = new Map<string, KnowledgeEntry>();
+    private readonly corpus: string;
+    private readonly getEmbedding: () => Promise<EmbeddingProvider>;
 
-    constructor(connectionString?: string) {
+    constructor(connectionString?: string, options: KnowledgeBaseOptions = {}) {
         this.client = new Client({
-            connectionString: connectionString || process.env.DATABASE_URL || 'postgresql://localhost:5432/cwc_knowledge'
+            connectionString: connectionString || process.env.DATABASE_URL || 'postgresql://localhost:5432/arc_knowledge',
+            connectionTimeoutMillis: 3000,
         });
-        this.embeddingCache = new Map();
+        this.corpus = label.parse(options.corpus ?? 'default');
+        const configuredPath = process.env.ARC_LOCAL_EMBEDDING_PATH;
+        const supplied = options.embedding;
+        if (supplied) {
+            const provider = { id: label.parse(supplied.id), generate: supplied.generate.bind(supplied) };
+            this.getEmbedding = async () => provider;
+        } else {
+            this.getEmbedding = () => getLocalEmbeddingProvider(configuredPath);
+        }
     }
 
     async connect(): Promise<void> {
@@ -50,11 +99,14 @@ export class KnowledgeBase {
             await this.ensureSchema();
             this.isMemoryMode = false;
             console.log('✅ Connected to PostgreSQL Knowledge Base');
-        } catch (error) {
+        } catch {
+            await this.client.end().catch(() => undefined);
             this.isMemoryMode = true;
-            console.warn('⚠️ PostgreSQL connection failed, falling back to In-Memory Mode:', (error as Error).message);
+            console.warn('⚠️ PostgreSQL unavailable, falling back to In-Memory Mode');
         }
     }
+
+    get storageMode(): 'postgres' | 'memory' { return this.isMemoryMode ? 'memory' : 'postgres'; }
 
     async disconnect(): Promise<void> {
         if (!this.isMemoryMode) {
@@ -78,46 +130,39 @@ export class KnowledgeBase {
       );
     `);
 
-        // Create index for vector similarity search
-        try {
-            await this.client.query(`
-          CREATE INDEX IF NOT EXISTS knowledge_base_embedding_idx 
-          ON knowledge_base USING ivfflat (embedding vector_cosine_ops)
-          WITH (lists = 100);
-        `);
-        } catch (error) {
-            console.warn('Warning: Could not create index (likely vector dimension mismatch with existing table)', error);
-        }
+    }
 
-        // Create function for similarity search
+    private async ingest(content: string, metadata: KnowledgeEntry['metadata']): Promise<void> {
+        if (typeof content !== 'string' || !content.trim() || content.includes('\0') || typeof metadata.source !== 'string' || !metadata.source.trim()) {
+            throw new Error('Document content and source are required as plain text');
+        }
+        if (Buffer.byteLength(content) > MAX_DOCUMENT_BYTES) throw new Error('Document exceeds the 128 KiB ingestion limit');
+        metadataSchema.parse(metadata);
+        const provider = await this.getEmbedding();
+        const documentId = createHash('sha256')
+            .update(JSON.stringify([this.corpus, provider.id, metadata.type, metadata.source, metadata.tags, content.trim()]))
+            .digest('hex');
+        const characters = Array.from(content.trim());
+        const chunks: Array<{ id: string; content: string; embedding: number[]; metadata: KnowledgeEntry['metadata'] }> = [];
+        for (let offset = 0; offset < characters.length; offset += 1000) {
+            const chunk = offset / 1000;
+            const text = characters.slice(offset, offset + 1000).join('');
+            if (!text.trim()) continue;
+            const key = JSON.stringify([documentId, chunk]);
+            const hash = createHash('sha256').update(key).digest('hex');
+            const id = [hash.slice(0, 8), hash.slice(8, 12), hash.slice(12, 16), hash.slice(16, 20), hash.slice(20, 32)].join('-');
+            chunks.push({ id, content: text, embedding: await this.generateEmbedding(text, provider), metadata: { ...metadata, chunk, documentId, corpus: this.corpus, embeddingModel: provider.id } });
+        }
+        if (this.isMemoryMode) {
+            for (const chunk of chunks) if (!this.memoryEntries.has(chunk.id)) this.memoryEntries.set(chunk.id, chunk);
+            return;
+        }
         await this.client.query(`
-      CREATE OR REPLACE FUNCTION match_documents(
-        query_embedding vector(384),
-        match_threshold float,
-        match_count int
-      )
-      RETURNS TABLE (
-        id uuid,
-        content text,
-        metadata jsonb,
-        similarity float
-      )
-      LANGUAGE plpgsql
-      AS $$
-      BEGIN
-        RETURN QUERY
-        SELECT
-          knowledge_base.id,
-          knowledge_base.content,
-          knowledge_base.metadata,
-          1 - (knowledge_base.embedding <=> query_embedding) as similarity
-        FROM knowledge_base
-        WHERE 1 - (knowledge_base.embedding <=> query_embedding) > match_threshold
-        ORDER BY knowledge_base.embedding <=> query_embedding
-        LIMIT match_count;
-      END;
-      $$;
-    `);
+            INSERT INTO knowledge_base (id, content, embedding, metadata)
+            SELECT id, content, embedding::text::vector, metadata
+            FROM jsonb_to_recordset($1::jsonb) AS entries(id uuid, content text, embedding jsonb, metadata jsonb)
+            ON CONFLICT (id) DO NOTHING
+        `, [JSON.stringify(chunks)]);
     }
 
     /**
@@ -129,30 +174,16 @@ export class KnowledgeBase {
         additionalContext?: string
     ): Promise<void> {
         const content = this.formatWorkflowContent(workflowName, result, additionalContext);
-        const embedding = await this.generateEmbedding(content);
         const metadata = {
             type: 'workflow' as const,
             source: workflowName,
             timestamp: new Date(),
             tags: this.extractTags(workflowName, result),
             success: result.success,
-            confidence: (result.stats?.successfulSteps ?? 0) / (result.stats?.totalSteps ?? 1)
+            confidence: (result.stats?.successfulSteps ?? 0) / Math.max(1, result.stats?.totalSteps ?? 1)
         };
 
-        if (this.isMemoryMode) {
-            this.memoryEntries.push({
-                id: Math.random().toString(36).substring(2),
-                content,
-                embedding,
-                metadata
-            });
-            return;
-        }
-
-        await this.client.query(
-            `INSERT INTO knowledge_base (content, embedding, metadata) VALUES ($1, $2, $3)`,
-            [content, JSON.stringify(embedding), JSON.stringify(metadata)]
-        );
+        await this.ingest(content, metadata);
     }
 
     /**
@@ -164,7 +195,6 @@ export class KnowledgeBase {
         context?: string
     ): Promise<void> {
         const content = `Error: ${error}\nResolution: ${resolution}\nContext: ${context || 'N/A'}`;
-        const embedding = await this.generateEmbedding(content);
         const metadata = {
             type: 'error' as const,
             source: 'error-resolution',
@@ -173,20 +203,7 @@ export class KnowledgeBase {
             confidence: 0.9
         };
 
-        if (this.isMemoryMode) {
-            this.memoryEntries.push({
-                id: Math.random().toString(36).substring(2),
-                content,
-                embedding,
-                metadata
-            });
-            return;
-        }
-
-        await this.client.query(
-            `INSERT INTO knowledge_base (content, embedding, metadata) VALUES ($1, $2, $3)`,
-            [content, JSON.stringify(embedding), JSON.stringify(metadata)]
-        );
+        await this.ingest(content, metadata);
     }
 
     /**
@@ -197,7 +214,6 @@ export class KnowledgeBase {
         topic: string,
         content: string
     ): Promise<void> {
-        const embedding = await this.generateEmbedding(content);
         const metadata = {
             type: 'web-scraped' as const,
             source: url,
@@ -206,20 +222,7 @@ export class KnowledgeBase {
             confidence: 0.85
         };
 
-        if (this.isMemoryMode) {
-            this.memoryEntries.push({
-                id: Math.random().toString(36).substring(2),
-                content,
-                embedding,
-                metadata
-            });
-            return;
-        }
-
-        await this.client.query(
-            `INSERT INTO knowledge_base (content, embedding, metadata) VALUES ($1, $2, $3)`,
-            [content, JSON.stringify(embedding), JSON.stringify(metadata)]
-        );
+        await this.ingest(content, metadata);
     }
 
     /**
@@ -235,29 +238,37 @@ export class KnowledgeBase {
     ): Promise<QueryResult[]> {
         const { limit = 5, threshold = 0.7, type } = options;
 
+        if (typeof query !== 'string' || !query.trim() || query.includes('\0') || Buffer.byteLength(query) > MAX_QUERY_BYTES
+            || !Number.isSafeInteger(limit) || limit < 0 || limit > 100 || !Number.isFinite(threshold) || threshold < -1 || threshold > 1) {
+            throw new Error('Invalid retrieval query, limit, or threshold');
+        }
+        if (limit === 0) return [];
+
         // Generate query embedding
-        const queryEmbedding = await this.generateEmbedding(query);
+        const provider = await this.getEmbedding();
+        const queryEmbedding = await this.generateEmbedding(query, provider);
 
         if (this.isMemoryMode) {
             return this.matchDocumentsInMemory(queryEmbedding, threshold, limit, type);
         }
 
-        // Search for similar documents
-        const result = await this.client.query(
-            `SELECT * FROM match_documents($1::vector, $2, $3)`,
-            [JSON.stringify(queryEmbedding), threshold, limit]
-        );
-
-        // Filter by type if specified
-        let results = result.rows;
-        if (type) {
-            results = results.filter((row: any) => row.metadata.type === type);
-        }
-
-        return results.map((row: any) => ({
-            content: row.content,
-            similarity: row.similarity,
-            metadata: row.metadata
+        // Older databases can still have an approximate IVFFlat index. Score the
+        // scoped rows before sorting so that index cannot omit eligible documents.
+        const result = await this.client.query<QueryResult>(`
+            WITH scoped AS MATERIALIZED (
+                SELECT id, content, metadata, embedding
+                FROM knowledge_base
+                WHERE metadata->>'corpus' = $4 AND metadata->>'embeddingModel' = $5
+                    AND ($6::text IS NULL OR metadata->>'type' = $6)
+            )
+            SELECT content, metadata, 1 - (embedding <=> $1::vector) AS similarity
+            FROM scoped
+            WHERE 1 - (embedding <=> $1::vector) >= $2
+            ORDER BY embedding <=> $1::vector, id
+            LIMIT $3
+        `, [JSON.stringify(queryEmbedding), threshold, limit, this.corpus, provider.id, type ?? null]);
+        return result.rows.map(({ content, similarity, metadata }) => ({
+            content, similarity, metadata: { ...metadata, timestamp: new Date(metadata.timestamp) },
         }));
     }
 
@@ -270,7 +281,7 @@ export class KnowledgeBase {
         limit: number,
         type?: KnowledgeEntry['metadata']['type']
     ): QueryResult[] {
-        let entries = this.memoryEntries;
+        let entries = Array.from(this.memoryEntries.values());
         if (type) {
             entries = entries.filter(e => e.metadata.type === type);
         }
@@ -301,70 +312,15 @@ export class KnowledgeBase {
         return dotProduct / (Math.sqrt(mag1) * Math.sqrt(mag2) || 1);
     }
 
-    /**
-     * Generate embedding for text (using Xenova local model only)
-     */
-    private async generateEmbedding(text: string): Promise<number[]> {
-        // Check cache first
-        if (this.embeddingCache.has(text)) {
-            return this.embeddingCache.get(text)!;
+    private async generateEmbedding(text: string, provider: EmbeddingProvider): Promise<number[]> {
+        const generated = await provider.generate(text);
+        const vector = Array.isArray(generated)
+            ? Array.from(generated, value => typeof value === 'number' ? Math.fround(value) : NaN)
+            : [];
+        if (vector.length !== 384 || !vector.every(Number.isFinite) || !vector.some(value => value !== 0)) {
+            throw new Error('Expected a nonzero embedding with 384 finite dimensions');
         }
-
-        try {
-            // Use local embedding model (Xenova/all-MiniLM-L6-v2)
-            // Dimensions: 384
-            // Speed: ~10ms on CPU
-            // Cost: Free
-            return await this.generateLocalEmbedding(text);
-        } catch (error) {
-            console.warn('Local embedding failed, falling back to hash:', error);
-            return this.generateFallbackEmbedding(text);
-        }
-    }
-
-    /**
-     * Generate embedding using local Xenova model
-     */
-    private async generateLocalEmbedding(text: string): Promise<number[]> {
-        // Dynamic import to avoid build issues if package missing
-        const { pipeline } = await import('@xenova/transformers');
-
-        // Singleton pattern: reuse pipeline instance
-        // @ts-ignore
-        if (!global.embeddingPipeline) {
-            // @ts-ignore
-            global.embeddingPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
-        }
-
-        // @ts-ignore
-        const extractor = global.embeddingPipeline;
-
-        // Generate embedding
-        const output = await extractor(text, { pooling: 'mean', normalize: true });
-
-        // Convert Tensor to array
-        const embedding = Array.from(output.data) as number[];
-
-        this.embeddingCache.set(text, embedding);
-        return embedding;
-    }
-
-    /**
-     * Generate a simple fallback embedding (when local model fails)
-     */
-    private generateFallbackEmbedding(text: string): number[] {
-        const embedding = new Array(384).fill(0);
-
-        // Simple hash-based approach
-        for (let i = 0; i < text.length; i++) {
-            const charCode = text.charCodeAt(i);
-            const index = (charCode * (i + 1)) % 384;
-            embedding[index] += charCode / 1000;
-        }
-
-        // Normalize
-        const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
-        return embedding.map(val => val / (magnitude || 1));
+        return vector;
     }
 
     /**
@@ -430,26 +386,30 @@ export class KnowledgeBase {
         if (this.isMemoryMode) {
             const byType: Record<string, number> = {};
             let successCount = 0;
-            for (const entry of this.memoryEntries) {
+            for (const entry of this.memoryEntries.values()) {
                 const type = entry.metadata.type;
                 byType[type] = (byType[type] || 0) + 1;
                 if (entry.metadata.success) successCount++;
             }
             return {
-                totalEntries: this.memoryEntries.length,
+                totalEntries: this.memoryEntries.size,
                 byType,
-                successRate: this.memoryEntries.length > 0 ? successCount / this.memoryEntries.length : 0
+                successRate: this.memoryEntries.size > 0 ? successCount / this.memoryEntries.size : 0
             };
         }
 
-        const totalResult = await this.client.query('SELECT COUNT(*) FROM knowledge_base');
+        const scope = "metadata->>'corpus' = $1 AND metadata->>'embeddingModel' = $2";
+        const provider = await this.getEmbedding();
+        const parameters = [this.corpus, provider.id];
+        const totalResult = await this.client.query(`SELECT COUNT(*) FROM knowledge_base WHERE ${scope}`, parameters);
         const total = parseInt(totalResult.rows[0].count);
 
         const typeResult = await this.client.query(`
       SELECT metadata->>'type' as type, COUNT(*) as count
       FROM knowledge_base
+      WHERE ${scope}
       GROUP BY metadata->>'type'
-    `);
+    `, parameters);
 
         const byType: Record<string, number> = {};
         typeResult.rows.forEach((row: any) => {
@@ -459,8 +419,8 @@ export class KnowledgeBase {
         const successResult = await this.client.query(`
       SELECT COUNT(*) as count
       FROM knowledge_base
-      WHERE metadata->>'success' = 'true'
-    `);
+      WHERE ${scope} AND metadata->>'success' = 'true'
+    `, parameters);
         const successCount = parseInt(successResult.rows[0].count);
 
         return {

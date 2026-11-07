@@ -5,24 +5,31 @@
  * They can be non-deterministic and interact with external services.
  */
 
-import { KnowledgeBase } from '../../rag/knowledge-base.js';
+import { KnowledgeBase, assembleRetrievedContext, type QueryResult } from '../../rag/knowledge-base.js';
 import { ClaudeScraper } from '../../scraping/claude-scraper.js';
-import { ArchitectAgent } from '../../agents/architect.js';
+import { ArchitectService } from '../../services/architect-service.js';
+import { PlanConverter } from '../../parsers/plan-converter.js';
+import { Context } from '@temporalio/activity';
+import { loadRuntime } from '../../tools/runtime.js';
+import { z } from 'zod';
 import { BuilderAgent } from '../../agents/builder.js';
-import type { PrunedToolIndex } from '../../types/index.js';
+import type { WorkflowStep } from '../../parsers/plan-converter.js';
+import { createBuilderExecutionActivity } from './builder-activity.js';
+import { resolve } from 'node:path';
+
 
 // Initialize services
-let knowledgeBase: KnowledgeBase | null = null;
+let knowledgeBase: Promise<KnowledgeBase> | undefined;
 let scraper: ClaudeScraper | null = null;
-let architect: ArchitectAgent | null = null;
-let builder: BuilderAgent | null = null;
+let runtime: ReturnType<typeof loadRuntime> | undefined;
+const getRuntime = () => runtime ??= loadRuntime(process.cwd(), process.env.ARC_RUNTIME_CONFIG);
 
 async function getKnowledgeBase(): Promise<KnowledgeBase> {
-    if (!knowledgeBase) {
-        knowledgeBase = new KnowledgeBase();
-        await knowledgeBase.connect();
-    }
-    return knowledgeBase;
+    return knowledgeBase ??= (async () => {
+        const instance = new KnowledgeBase();
+        await instance.connect();
+        return instance;
+    })().catch(error => { knowledgeBase = undefined; throw error; });
 }
 
 function getScraper(): ClaudeScraper {
@@ -30,20 +37,6 @@ function getScraper(): ClaudeScraper {
         scraper = new ClaudeScraper();
     }
     return scraper;
-}
-
-function getArchitect(): ArchitectAgent {
-    if (!architect) {
-        architect = new ArchitectAgent();
-    }
-    return architect;
-}
-
-function getBuilder(): BuilderAgent {
-    if (!builder) {
-        builder = new BuilderAgent();
-    }
-    return builder;
 }
 
 /**
@@ -113,32 +106,16 @@ export async function scrapeDocumentationActivity(
  */
 export async function generatePlanActivity(
     request: string,
-    context: any
+    context: { similarWorkflows?: QueryResult[] } | null
 ): Promise<any> {
     try {
-        const architectAgent = getArchitect();
+        const current = await getRuntime();
+        const references = assembleRetrievedContext(context?.similarWorkflows ?? []);
+        const plan = await new ArchitectService({}, current.registry.catalog()).createPlanFromRequest(request, Context.current().cancellationSignal, references);
+        if ('error_code' in plan) throw new Error(plan.error_message);
+        const conversion = await new PlanConverter(current.registry.catalog()).convert(plan);
+        return conversion.workflow;
 
-        // Load tool index (simplified for now)
-        const toolIndex: PrunedToolIndex = {
-            tools: [],
-            categories: [],
-            totalTools: 0,
-            prunedFrom: 0
-        };
-
-        // Generate plan with context
-        const plan = await architectAgent.plan(request, toolIndex);
-
-        // Enhance plan with context if available
-        if (context?.similarWorkflows?.length > 0) {
-            plan.context_used = {
-                similar_workflows: context.similarWorkflows.length,
-                confidence: context.confidence,
-                external_docs: context.externalDocs ? 'yes' : 'no'
-            };
-        }
-
-        return plan;
     } catch (error) {
         console.error('Plan generation failed:', error);
         throw error;
@@ -149,21 +126,28 @@ export async function generatePlanActivity(
  * Execute a single workflow step
  */
 export async function executeStepActivity(
-    step: any,
-    options: any
+    step: WorkflowStep | { type: 'workflow-file'; path: string },
+    options: unknown
 ): Promise<any> {
     try {
-        const builderAgent = getBuilder();
+        if ('type' in step) {
+            const { loadWorkflowFromFile } = await import('../../parsers/workflow-parser.js');
+            const { executeWorkflow } = await import('../../engine/workflow-engine.js');
+            const report = await executeWorkflow(await loadWorkflowFromFile(step.path));
+            if (!report.success) throw new Error(report.errors.join('; '));
+            return report;
+        }
+        const current = await getRuntime();
+        const executionOptions = z.object({ autoApprove: z.boolean().optional() }).passthrough().parse(options);
+        const builderAgent = new BuilderAgent(current.registry);
 
-        // Execute step (simplified for now)
-        const startTime = Date.now();
-
-        // Simulate execution
-        const result = {
-            success: true,
-            output: `Executed step: ${step.name || step.id}`,
-            duration: Date.now() - startTime
-        };
+        const execution = await builderAgent.execute({
+            name: `Temporal step ${step.id}`, steps: [step],
+            metadata: { architect_plan_id: 'temporal', confidence_score: 1,
+                conversion_timestamp: new Date().toISOString(), tool_count: 1, hallucination_count: 0 },
+        }, { permissions: current.permissions, approved: executionOptions.autoApprove === true, signal: Context.current().cancellationSignal });
+        const result = execution.step_results[0];
+        if (!result || result.status !== 'success') throw new Error(result?.error?.message || 'Tool execution failed');
 
         return result;
     } catch (error) {
@@ -171,6 +155,11 @@ export async function executeStepActivity(
         throw error;
     }
 }
+
+/** One activity preserves dependency state; non-idempotent execution is not automatically retried. */
+export const executeBuilderWorkflowActivity = createBuilderExecutionActivity({
+    workspaceRoot: resolve(process.env.ARC_TEMPORAL_WORKSPACE_ROOT || '.arc/temporal-runs'),
+});
 
 /**
  * Store workflow results in knowledge base
@@ -265,9 +254,10 @@ export async function getPackageInfoActivity(
  * Cleanup function to close connections
  */
 export async function cleanup(): Promise<void> {
+    if (runtime) { await (await runtime).close(); runtime = undefined; }
     if (knowledgeBase) {
-        await knowledgeBase.disconnect();
-        knowledgeBase = null;
+        await (await knowledgeBase).disconnect();
+        knowledgeBase = undefined;
     }
     if (scraper) {
         scraper.clearCache();

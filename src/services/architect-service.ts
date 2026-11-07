@@ -8,7 +8,6 @@ import { ArchitectAgent } from '../agents/architect.js';
 import type {
   ArchitectServiceConfig,
   ArchitectResponse,
-  PlanValidationResult,
 } from '../types/architect.js';
 
 /**
@@ -19,7 +18,7 @@ export class ArchitectService {
   private agent: ArchitectAgent;
   private config: ArchitectServiceConfig;
 
-  constructor(config?: Partial<ArchitectServiceConfig>) {
+  constructor(config?: Partial<ArchitectServiceConfig>, catalog?: import('../parsers/plan-converter.js').MCPToolSchema[], agent?: ArchitectAgent) {
     this.config = {
       model_tier: 'haiku',
       max_input_tokens: 2000,
@@ -36,8 +35,8 @@ export class ArchitectService {
       ...config,
     };
 
-    this.pruner = new ToolPruner(this.config.pruner);
-    this.agent = new ArchitectAgent({
+    this.pruner = new ToolPruner(this.config.pruner, catalog?.map(tool => ({ id: tool.id, name: tool.name, description: tool.description, category: tool.category })));
+    this.agent = agent ?? new ArchitectAgent({
       model_tier: this.config.model_tier,
       max_input_tokens: this.config.max_input_tokens,
       max_output_tokens: this.config.max_output_tokens,
@@ -49,7 +48,7 @@ export class ArchitectService {
    * Main entry point: Create plan from user request
    * Handles pruning + planning + validation
    */
-  async createPlanFromRequest(request: string): Promise<ArchitectResponse> {
+  async createPlanFromRequest(request: string, signal?: AbortSignal, retrievedContext?: string): Promise<ArchitectResponse> {
     try {
       // Step 1: Prune catalog
       const toolIndex = this.pruner.pruneCatalog();
@@ -67,15 +66,15 @@ export class ArchitectService {
       };
 
       // Step 3: Generate plan
-      const plan = await this.agent.plan(request, focusedIndex);
+      const plan = await this.agent.plan(request, focusedIndex, signal, retrievedContext);
 
       // Step 4: Validate if enabled
-      if (this.config.enable_validation && 'plan' in plan) {
+      if (this.config.enable_validation && !('error_code' in plan)) {
         const validation = this.agent.validatePlan(plan, focusedIndex);
         if (!validation.is_valid) {
           console.warn('⚠️ Plan validation warnings:', validation.warnings);
           if (validation.errors.length > 0) {
-            console.error('❌ Plan validation errors:', validation.errors);
+            return { error_code: 'INVALID_PLAN', error_message: validation.errors.join('; ') };
           }
         }
       }

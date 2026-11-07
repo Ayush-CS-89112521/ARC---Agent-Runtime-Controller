@@ -93,7 +93,7 @@ export class ProgressHeader {
     const lines: string[] = [];
 
     // Title bar
-    lines.push(TerminalUI.colors.highlight('▶ Copilot Workflow Composer'));
+    lines.push(TerminalUI.colors.highlight('▶ Agent Runtime Controller'));
 
     // Progress bar and counter
     lines.push(

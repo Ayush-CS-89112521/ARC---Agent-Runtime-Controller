@@ -49,7 +49,9 @@ describe('RAG Knowledge Base (System Independent)', () => {
     let kb: KnowledgeBase;
 
     beforeAll(async () => {
-        kb = new KnowledgeBase();
+        kb = new KnowledgeBase(undefined, {
+            embedding: { id: 'numeric-fixture', generate: async () => [1, ...Array(383).fill(0)] },
+        });
         await kb.connect();
     });
 

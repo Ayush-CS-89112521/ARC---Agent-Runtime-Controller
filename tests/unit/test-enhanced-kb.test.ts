@@ -10,7 +10,7 @@ import { join } from 'path';
 
 describe('Enhanced Knowledge Base', () => {
     let kb: EnhancedKnowledgeBase;
-    const testDir = join(process.cwd(), '.cwc-test-enhanced');
+    const testDir = join(process.cwd(), '.arc-test-enhanced');
     const dataDir = join(process.cwd(), 'data');
 
     // Mock data paths

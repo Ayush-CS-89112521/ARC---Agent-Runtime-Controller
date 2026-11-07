@@ -9,7 +9,7 @@ import { join } from 'path';
 
 describe('Simple Knowledge Base', () => {
     let kb: SimpleKnowledgeBase;
-    const testDir = join(process.cwd(), '.cwc-test');
+    const testDir = join(process.cwd(), '.arc-test');
 
     beforeAll(async () => {
         kb = new SimpleKnowledgeBase(testDir);

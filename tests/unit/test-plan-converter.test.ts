@@ -573,7 +573,7 @@ describe('Plan Converter', () => {
       expect(safety.require_approval).toBe(true); // API key required
     });
 
-    it('should not require approval for open tools', async () => {
+    it('should require approval for modifying tools even without authentication', async () => {
       const plan: ArchitectPlan = {
         plan_id: 'test-15',
         request_summary: 'Open tool test',
@@ -599,7 +599,7 @@ describe('Plan Converter', () => {
       const result = await converter.convert(plan);
       const safety = result.workflow.steps[0].safety;
 
-      expect(safety.require_approval).toBe(false);
+      expect(safety.require_approval).toBe(true);
     });
   });
 

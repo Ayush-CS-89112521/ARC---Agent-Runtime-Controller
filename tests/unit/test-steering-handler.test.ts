@@ -21,9 +21,9 @@ const mockSpawn = mock((_args?: any) => {
     };
 });
 
-mock.module('bun', () => {
+mock.module('../../src/interactive/editor-process.js', () => {
     return {
-        spawn: mockSpawn
+        launchEditor: async (editor: string, file: string) => { await mockSpawn([editor, file]).exited; }
     };
 });
 

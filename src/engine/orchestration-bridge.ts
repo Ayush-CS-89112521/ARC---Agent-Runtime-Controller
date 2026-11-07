@@ -7,7 +7,7 @@
  */
 
 import type { ExecutionContext, ExecutionReport, StepResult } from '../types/index.js';
-import type { ExecutionResult, StepResult as BuilderStepResult, AuditEntry } from '../agents/builder.js';
+import type { ExecutionResult, AuditEntry } from '../agents/builder.js';
 import type { Workflow } from '../parsers/plan-converter.js';
 
 /**
@@ -53,44 +53,31 @@ export function convertBuilderResultToReport(
   workflow: Workflow,
   builderResult: ExecutionResult,
   bridgeContext: BridgeContext
-): ExecutionReport {
+): ExecutionReport<Workflow> {
   // Convert builder step results to traditional format
   const stepResults: StepResult[] = builderResult.step_results.map((builderStep) => {
     // Find corresponding workflow step
-    const workflowStepId = bridgeContext.stepIdMapping.get(builderStep.step_id) || `step_${builderStep.step_id}`;
+    const workflowStepId = bridgeContext.stepIdMapping.get(builderStep.step_id) || builderStep.step_id;
 
     return {
       stepId: workflowStepId,
-      stepName: builderStep.step_name,
-      status: builderStep.status === 'success' ? 'success' : 'failed',
-      output: typeof builderStep.output === 'string' ? builderStep.output : JSON.stringify(builderStep.output),
+      success: builderStep.status === 'success',
+      output: typeof builderStep.output === 'string' ? builderStep.output : (JSON.stringify(builderStep.output) ?? ''),
       duration: builderStep.duration_ms,
-      timestamp: builderStep.timestamp,
-      error: builderStep.error
-        ? {
-            message: builderStep.error.message,
-            code: builderStep.error.code,
-          }
-        : undefined,
+      timestamp: new Date(builderStep.timestamp),
+      retriesAttempted: 0,
+      ...(builderStep.error ? { error: builderStep.error.message } : {}),
     };
   });
 
   // Merge step results into execution context
   const context = bridgeContext.workflowContext;
   stepResults.forEach((result) => {
-    context.results.push({
-      stepId: result.stepId,
-      stepName: result.stepName,
-      status: result.status,
-      output: result.output,
-      duration: result.duration,
-      timestamp: result.timestamp,
-      error: result.error,
-    });
+    context.results.push(result);
   });
 
   // Create execution report
-  const report: ExecutionReport = {
+  const report: ExecutionReport<Workflow> = {
     workflow,
     context,
     success: builderResult.status === 'success',
@@ -179,7 +166,7 @@ export function mergeAuditTrail(context: BridgeContext, auditTrail: AuditEntry[]
  * @param result - Final execution result
  * @returns Human-readable summary
  */
-export function generateExecutionSummary(context: BridgeContext, result: ExecutionResult): string {
+export function generateExecutionSummary(_context: BridgeContext, result: ExecutionResult): string {
   const summary = [
     `Orchestrator Execution Summary`,
     `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,

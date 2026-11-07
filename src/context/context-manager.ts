@@ -38,7 +38,7 @@ export function generateRunId(workflowName: string): string {
   const randomHash = randomBytes(4).toString('hex').substring(0, 6);
 
   // Sanitize workflow name (lowercase, replace spaces with hyphens)
-  const sanitizedName = workflowName.toLowerCase().replace(/\s+/g, '-');
+  const sanitizedName = workflowName.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').slice(0, 80);
 
   return `${sanitizedName}-${timestamp}-${randomHash}`;
 }
@@ -55,11 +55,13 @@ export function initializeContext(
   workflow: Workflow,
   overrideConfig?: Partial<WorkflowConfig>
 ): ExecutionContext {
+  const resources = overrideConfig?.resources ?? workflow.config?.resources;
   const config: WorkflowConfig = {
     timeout: overrideConfig?.timeout ?? workflow.config?.timeout ?? 30000,
     retries: overrideConfig?.retries ?? workflow.config?.retries ?? 2,
     failFast: overrideConfig?.failFast ?? workflow.config?.failFast ?? true,
     validateOutput: overrideConfig?.validateOutput ?? workflow.config?.validateOutput ?? true,
+    ...(resources ? { resources } : {}),
   };
 
   return {

@@ -9,7 +9,7 @@
  * - Shows tool status indicators
  */
 
-import { spawn } from 'bun';
+import { launchEditor } from './editor-process.js';
 import { writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -226,16 +226,7 @@ export async function openInEditor(content: string, stepId: string): Promise<voi
     const editor = process.env.EDITOR || 'vim';
 
     // Spawn editor process and wait for it to finish
-    const proc = spawn({
-      cmd: [editor, filepath],
-      stdio: ['inherit', 'inherit', 'inherit'],
-    });
-
-    const exitCode = await proc.exited;
-
-    if (exitCode !== 0) {
-      console.warn(`⚠️  Editor exited with code ${exitCode}`);
-    }
+    await launchEditor(editor, filepath);
 
     console.log(`\n📝 Closed editor. Review complete.\n`);
   } catch (error) {

@@ -273,7 +273,7 @@ export async function resolveToolVariable(
     if (!tool) {
       return {
         resolved: false,
-        error: `Tool '${toolName}' not found in MCP registry. Use 'cwc --list-tools' to see available tools.`,
+        error: `Tool '${toolName}' not found in MCP registry. Use 'arc --list-tools' to see available tools.`,
       };
     }
 

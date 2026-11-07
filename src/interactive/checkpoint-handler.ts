@@ -1,4 +1,4 @@
-import type { Workflow, WorkflowStep } from '../parsers/plan-converter';
+import type { Workflow } from '../parsers/plan-converter';
 import type { HallucinationAlert } from '../parsers/plan-converter';
 import * as readline from 'readline';
 
@@ -61,6 +61,9 @@ export class CheckpointHandler {
       const requiresApproval = this.checkApprovalRequired(workflow, hallucinations);
 
       if (requiresApproval) {
+        if (!process.stdin.isTTY) return { approved: false, action: 'reject',
+          user_context: 'Interactive approval required; use explicit auto-approval in unattended runs',
+          timestamp: new Date().toISOString() };
         // Get user decision
         return await this.promptForDecision(workflow, hallucinations);
       } else {
@@ -237,7 +240,7 @@ export class CheckpointHandler {
           return {
             approved: false,
             action: 'reject',
-            user_context: reason || undefined,
+            ...(reason ? { user_context: reason } : {}),
             timestamp: new Date().toISOString(),
           };
 
@@ -269,7 +272,7 @@ export class CheckpointHandler {
    */
   private displayFullDetails(
     workflow: Workflow,
-    hallucinations: HallucinationAlert[],
+    _hallucinations: HallucinationAlert[],
   ): void {
     console.log('\n' + '='.repeat(80));
     console.log('FULL WORKFLOW DETAILS');
@@ -424,8 +427,8 @@ export class CheckpointHandler {
    * Non-interactive mode: Auto-approve with logging
    */
   async autoApprove(
-    workflow: Workflow,
-    hallucinations: HallucinationAlert[] = [],
+    _workflow: Workflow,
+    _hallucinations: HallucinationAlert[] = [],
   ): Promise<CheckpointDecision> {
     console.log('✓ Auto-approving workflow (non-interactive mode)');
     return {

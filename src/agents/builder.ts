@@ -1,12 +1,27 @@
+import { randomUUID } from 'node:crypto';
+import { ExecutableRegistry } from '../tools/executable-registry.js';
+import { BuilderWorkflowSchema } from '../schemas/builder-workflow.schema.js';
+import { maskGenericSecrets } from '../safety/secret-masker.js';
 import type { Workflow, WorkflowStep } from '../parsers/plan-converter';
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
 
 /**
  * Execution context maintained across workflow steps
  * Allows steps to reference outputs from previous steps
  */
+export interface BuilderExecutionOptions {
+  signal?: AbortSignal;
+  permissions?: ReadonlySet<string>;
+  approved?: boolean;
+  executionId?: string;
+}
+
 interface ExecutionContext {
+  controller: AbortController;
+  activeTool: AbortController | null;
+  activeStep: string | null;
+  options: BuilderExecutionOptions;
+  input: unknown;
+  steering: Map<string, { action: string; modified_prompt?: string; context?: string }>;
   variables: Map<string, unknown>;
   stepResults: Map<string, StepResult>;
   auditTrail: AuditEntry[];
@@ -103,17 +118,31 @@ export class BuilderAgent {
   private loadedTools: Map<string, ToolImplementation> = new Map();
   private toolCatalog: Map<string, unknown>;
   private auditTrail: AuditEntry[] = [];
+  private runs = new Map<string, ExecutionContext>();
+  private pending = new Map<string, { action: string; modified_prompt?: string; context?: string }>();
+  private hasExecuted = false;
+  private auditByRun = new Map<string, AuditEntry[]>();
+  private registry: ExecutableRegistry | undefined;
 
-  constructor(toolCatalog?: Map<string, unknown>) {
-    this.toolCatalog = toolCatalog || new Map();
+  constructor(toolCatalog?: Map<string, unknown> | ExecutableRegistry) {
+    this.registry = toolCatalog instanceof ExecutableRegistry ? toolCatalog : undefined;
+    this.toolCatalog = toolCatalog instanceof Map ? toolCatalog : new Map();
   }
 
   /**
    * Main entry point: Execute a complete workflow
    */
-  async execute(workflow: Workflow): Promise<ExecutionResult> {
+  async execute(workflow: Workflow, options: BuilderExecutionOptions = {}): Promise<ExecutionResult> {
+    BuilderWorkflowSchema.parse(workflow);
     const startTime = Date.now();
+    const executionId = options.executionId ?? randomUUID();
+    if (this.runs.has(executionId)) throw new Error('Execution ID is already active');
+    const controller = new AbortController();
+    const abort = () => controller.abort(options.signal?.reason ?? new Error('Execution cancelled'));
+    if (options.signal?.aborted) abort();
+    options.signal?.addEventListener('abort', abort, { once: true });
     const context: ExecutionContext = {
+      controller, activeTool: null, activeStep: null, options: { ...options, executionId }, input: undefined, steering: new Map(this.pending),
       variables: new Map(),
       stepResults: new Map(),
       auditTrail: [],
@@ -128,15 +157,24 @@ export class BuilderAgent {
     let skippedCount = 0;
 
     // Build execution order based on dependencies
-    const executionOrder = this.buildExecutionOrder(workflow.steps);
+    let executionOrder: number[];
+    try { executionOrder = this.buildExecutionOrder(workflow.steps); }
+    catch (error) { options.signal?.removeEventListener('abort', abort); throw error; }
+    this.pending.clear();
+    this.runs.set(executionId, context);
+    this.hasExecuted = true;
 
     // Execute steps in order
     for (const stepIndex of executionOrder) {
-      const step = workflow.steps[stepIndex];
+      if (controller.signal.aborted) break;
+      let step = workflow.steps[stepIndex];
+      const intervention = context.steering.get(step.id);
+      if (intervention?.modified_prompt) step = { ...step, prompt: intervention.modified_prompt };
+      if (intervention?.context) step = { ...step, prompt: `${step.prompt}\nUser context: ${intervention.context}` };
 
       try {
         // Check dependencies before executing
-        if (!this.evaluateConditions(step, context)) {
+        if (intervention?.action === 'skip' || !this.evaluateConditions(step, context)) {
           // Step skipped due to unmet conditions
           const skipResult = this.createSkippedResult(step);
           stepResults.push(skipResult);
@@ -146,7 +184,16 @@ export class BuilderAgent {
         }
 
         // Execute the step
-        const result = await this.executeStep(step, context);
+        context.activeStep = step.id;
+        let result = await this.executeStep(step, context);
+        context.activeStep = null;
+        if (context.steering.get(step.id)?.action === 'skip') {
+          result = this.createSkippedResult(step);
+          skippedCount++;
+          stepResults.push(result);
+          context.stepResults.set(step.id, result);
+          continue;
+        }
         stepResults.push(result);
         context.stepResults.set(step.id, result);
         executedCount++;
@@ -167,8 +214,10 @@ export class BuilderAgent {
           }
         }
       } catch (err) {
+        executedCount++;
+        failedCount++;
         const errorMsg =
-          err instanceof Error ? err.message : String(err);
+          maskGenericSecrets(err instanceof Error ? err.message : String(err)).masked;
         errors.push({
           step_id: step.id,
           step_name: step.name,
@@ -183,16 +232,24 @@ export class BuilderAgent {
       }
     }
 
+    this.runs.delete(executionId);
+    options.signal?.removeEventListener('abort', abort);
+    if (controller.signal.aborted && errors.length === 0) errors.push({ step_id: 'controller', step_name: 'controller', message: 'Execution cancelled', timestamp: new Date().toISOString(), recoverable: false });
     const endTime = Date.now();
 
     // Copy audit trail to class property so getAuditTrail() can access it
     this.auditTrail = context.auditTrail;
+    this.auditByRun.set(executionId, context.auditTrail);
+    if (this.auditByRun.size > 100) {
+      const oldest = this.auditByRun.keys().next().value;
+      if (oldest !== undefined) this.auditByRun.delete(oldest);
+    }
 
     return {
       workflow_id: workflow.name,
       workflow_name: workflow.name,
       status:
-        failedCount === 0
+        controller.signal.aborted ? 'failed' : failedCount === 0
           ? 'success'
           : failedCount === executedCount
             ? 'failed'
@@ -201,7 +258,7 @@ export class BuilderAgent {
       total_steps: workflow.steps.length,
       step_results: stepResults,
       errors,
-      audit_trail_id: `audit_${Date.now()}`,
+      audit_trail_id: executionId,
       execution_time_ms: endTime - startTime,
       summary: {
         successful_steps: executedCount - failedCount,
@@ -236,9 +293,26 @@ export class BuilderAgent {
 
     try {
       // Load tool
-      const tool = await this.loadTool(step.tools[0].id);
+      if (step.tools.length !== 1) throw new Error('Each Builder step must request exactly one tool');
+      context.input = step.input ?? { prompt: step.prompt };
+      const registry = this.registry;
+      const tool = registry ? {
+        id: step.tools[0].id, name: step.tools[0].name,
+        execute: async (_prompt: string, current: ExecutionContext) => registry.invoke(step.tools[0].id, current.input, {
+          permissions: current.options.permissions ?? new Set(), approved: current.options.approved === true || current.steering.get(step.id)?.action === 'approve',
+          operationId: JSON.stringify([current.options.executionId, step.id]),
+          signal: current.activeTool?.signal ?? current.controller.signal,
+          timeoutMs: step.safety?.timeout ?? 60000,
+        }),
+      } : await this.loadTool(step.tools[0].id);
       if (!tool) {
         throw new Error(`Failed to load tool: ${step.tools[0]?.id}`);
+      }
+      if (!registry) {
+        if (!context.options.permissions?.has(`tool:${tool.id}`)) throw new Error(`Permission denied: tool:${tool.id}`);
+        if (step.safety.require_approval && !context.options.approved && context.steering.get(step.id)?.action !== 'approve') {
+          throw new Error(`Approval required: ${tool.id}`);
+        }
       }
 
       context.auditTrail.push({
@@ -293,7 +367,7 @@ export class BuilderAgent {
     } catch (err) {
       const stepEndTime = Date.now();
       const errorMsg =
-        err instanceof Error ? err.message : String(err);
+        maskGenericSecrets(err instanceof Error ? err.message : String(err)).masked;
 
       context.auditTrail.push({
         id: auditId + '_error',
@@ -316,8 +390,7 @@ export class BuilderAgent {
         error: {
           message: errorMsg,
           code: 'EXECUTION_ERROR',
-          stack:
-            err instanceof Error ? err.stack : undefined,
+          ...(err instanceof Error && err.stack ? { stack: err.stack } : {}),
         },
         duration_ms: stepEndTime - stepStartTime,
         timestamp: new Date().toISOString(),
@@ -337,37 +410,12 @@ export class BuilderAgent {
       return this.loadedTools.get(toolId) || null;
     }
 
-    // For now, return stub tool
-    // In production, would load from actual MCP catalog and validate
-    const stubTool: ToolImplementation = {
-      id: toolId,
-      name: toolId.replace(/-/g, ' ').toUpperCase(),
-      execute: this.createMockToolExecution(toolId),
-    };
-
-    this.loadedTools.set(toolId, stubTool);
-    return stubTool;
-  }
-
-  /**
-   * Create mock tool execution for testing
-   * In production, would call actual tool via MCP
-   */
-  private createMockToolExecution(toolId: string) {
-    return async (
-      prompt: string,
-      context: ExecutionContext,
-    ): Promise<unknown> => {
-      // Simulate tool execution
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      return {
-        tool_id: toolId,
-        executed_prompt: prompt.substring(0, 100),
-        result: `Executed ${toolId}`,
-        timestamp: new Date().toISOString(),
-      };
-    };
+    const tool = this.toolCatalog.get(toolId) as ToolImplementation | undefined;
+    if (!tool || typeof tool.execute !== 'function') {
+      throw new Error(`Tool '${toolId}' is not registered with an executable implementation`);
+    }
+    this.loadedTools.set(toolId, tool);
+    return tool;
   }
 
   /**
@@ -379,15 +427,28 @@ export class BuilderAgent {
     context: ExecutionContext,
     timeoutMs: number,
   ): Promise<unknown> {
-    return Promise.race([
-      tool.execute(prompt, context),
-      new Promise((_, reject) =>
-        setTimeout(
-          () => reject(new Error(`Tool execution timeout after ${timeoutMs}ms`)),
-          timeoutMs,
-        ),
-      ),
-    ]);
+    const controller = new AbortController();
+    context.activeTool = controller;
+    const cancel = () => controller.abort(context.controller.signal.reason ?? new Error('Execution cancelled'));
+    context.controller.signal.addEventListener('abort', cancel, { once: true });
+    if (context.controller.signal.aborted) cancel();
+    const timer = setTimeout(() => context.controller.abort(new Error(`Tool execution timeout after ${timeoutMs}ms`)), timeoutMs);
+    let listener: (() => void) | undefined;
+    try {
+      controller.signal.throwIfAborted();
+      const abort = new Promise<never>((_, reject) => {
+        listener = () => reject(controller.signal.reason);
+        controller.signal.addEventListener('abort', listener, { once: true });
+      });
+      const result = await Promise.race([tool.execute(prompt, context), abort]);
+      controller.signal.throwIfAborted();
+      return result;
+    } finally {
+      clearTimeout(timer);
+      context.controller.signal.removeEventListener('abort', cancel);
+      if (listener) controller.signal.removeEventListener('abort', listener);
+      context.activeTool = null;
+    }
   }
 
   /**
@@ -406,7 +467,8 @@ export class BuilderAgent {
     const conditions = step.when.split('&&').map(c => c.trim());
 
     for (const condition of conditions) {
-      const match = condition.match(/step_(\d+)_complete\s*==\s*true/);
+      const match = condition.match(/^step_(\d+)_complete\s*==\s*true$/);
+      if (!match) throw new Error(`Invalid Builder condition: ${condition}`);
       if (match) {
         const depStepId = `step_${match[1]}`;
         const depResult = context.stepResults.get(depStepId);
@@ -425,6 +487,8 @@ export class BuilderAgent {
    * Returns array of step indices in execution order
    */
   private buildExecutionOrder(steps: WorkflowStep[]): number[] {
+    const indices = new Map(steps.map((step, index) => [step.id, index]));
+    if (indices.size !== steps.length) throw new Error('Duplicate step IDs in workflow');
     const order: number[] = [];
     const visited = new Set<number>();
     const visiting = new Set<number>();
@@ -446,7 +510,9 @@ export class BuilderAgent {
           for (const dep of deps) {
             const depMatch = dep.match(/step_(\d+)/);
             if (depMatch) {
-              const depIndex = parseInt(depMatch[1]);
+              const depId = `step_${depMatch[1]}`;
+              const depIndex = indices.get(depId);
+              if (depIndex === undefined) throw new Error(`Unknown dependency: ${depId}`);
               visit(depIndex);
             }
           }
@@ -469,7 +535,7 @@ export class BuilderAgent {
    * Check if error is recoverable
    */
   private isRecoverable(
-    step: WorkflowStep,
+    _step: WorkflowStep,
     result: StepResult,
   ): boolean {
     // Timeouts and network errors are generally recoverable
@@ -514,8 +580,10 @@ export class BuilderAgent {
   /**
    * Get audit trail for Phase 5 steering + Phase 7 RLHF
    */
-  getAuditTrail(): AuditEntry[] {
-    return this.auditTrail;
+  getAuditTrail(executionId?: string): AuditEntry[] {
+    return structuredClone(executionId
+      ? this.runs.get(executionId)?.auditTrail ?? this.auditByRun.get(executionId) ?? []
+      : this.auditTrail);
   }
 
   /**
@@ -528,8 +596,18 @@ export class BuilderAgent {
       context?: string;
       modified_prompt?: string;
     },
+    executionId?: string,
   ): Promise<void> {
-    this.auditTrail.push({
+    if (!executionId && this.runs.size > 1) throw new Error('Specify executionId for concurrent steering');
+    const run = executionId ? this.runs.get(executionId) : [...this.runs.values()][0];
+    if (executionId && !run) throw new Error('Execution is not active');
+    if (run) {
+      if (input.action === 'modify' && run.activeTool && run.activeStep === stepId) throw new Error('Cannot modify an active tool; cancel or skip first');
+      run.steering.set(stepId, input);
+      if (input.action === 'terminate') run.controller.abort(new Error('Execution cancelled by steering'));
+      if (input.action === 'skip' && run.activeStep === stepId) run.activeTool?.abort(new Error('Step skipped by steering'));
+    } else if (!this.hasExecuted) this.pending.set(stepId, input);
+    (run?.auditTrail ?? this.auditTrail).push({
       id: `steering_${Date.now()}`,
       timestamp: new Date().toISOString(),
       step_id: stepId,

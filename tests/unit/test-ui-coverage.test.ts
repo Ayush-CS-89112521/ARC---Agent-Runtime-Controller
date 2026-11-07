@@ -106,7 +106,7 @@ describe('UI Coverage Boost', () => {
             // Since we mocked console.log, arguments are passed. 
             // In Bun test, mock.calls gives arguments array.
             // console.log receives a string.
-            expect(lastCall).toContain('Copilot Workflow Composer');
+            expect(lastCall).toContain('Agent Runtime Controller');
             expect(lastCall).toContain('Current:');
         });
 

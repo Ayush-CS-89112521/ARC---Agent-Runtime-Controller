@@ -9,15 +9,14 @@
  */
 
 import { ArchitectPlan } from '../types/architect';
-import { ExecutionContext } from '../types/index.js';
 import { Workflow, WorkflowStep } from '../parsers/plan-converter';
 import { ArchitectService } from '../services/architect-service';
 import { PlanConverter, type HallucinationAlert } from '../parsers/plan-converter';
 import { BuilderAgent, type ExecutionResult } from '../agents/builder';
 import { CheckpointHandler, type CheckpointDecision } from '../interactive/checkpoint-handler';
-import { ToolPruner, createToolPruner } from '../optimization/tool-pruner';
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { ToolPruner } from '../optimization/tool-pruner';
+import { ExecutableRegistry } from '../tools/executable-registry.js';
+import { registerLocalTools } from '../tools/local-adapters.js';
 
 /**
  * Planner Execution Mode: How to handle planning vs execution
@@ -44,6 +43,7 @@ export interface PlannerExecutionConfig {
   toolPruningEnabled: boolean;
   autoApprove: boolean;
   timeout: number; // milliseconds
+  permissions: string[];
 }
 
 /**
@@ -95,10 +95,14 @@ export class AutoSwitchOrchestrator {
   private builderAgent?: BuilderAgent;
   private checkpointHandler?: CheckpointHandler;
   private toolPruner?: ToolPruner;
-  private toolCatalog?: unknown[];
+  private registry: ExecutableRegistry;
+  private signal: AbortSignal | undefined;
+  private running = false;
 
-  constructor(config: Partial<PlannerExecutionConfig> = {}) {
+  constructor(config: Partial<PlannerExecutionConfig> = {}, registry?: ExecutableRegistry) {
+    this.registry = registry ?? registerLocalTools(new ExecutableRegistry(), process.cwd());
     this.config = {
+      permissions: [],
       mode: PlannerExecutionMode.AUTO_SWITCH,
       steeringEnabled: true,
       toolPruningEnabled: true,
@@ -125,19 +129,10 @@ export class AutoSwitchOrchestrator {
    */
   private initializeServices(): void {
     try {
-      // Load tool catalog for pruner + converter
-      const catalogPath = resolve(process.cwd(), 'data/mcp-catalog.json');
-      const catalogRaw = readFileSync(catalogPath, 'utf-8');
-      this.toolCatalog = JSON.parse(catalogRaw);
-
-      // Initialize Architect Service (uses ToolPruner internally)
-      this.architectService = new ArchitectService();
-
-      // Initialize Converter
-      this.planConverter = new PlanConverter((this.toolCatalog as any).tools);
-
-      // Initialize Builder
-      this.builderAgent = new BuilderAgent();
+      const catalog = this.registry.catalog();
+      this.architectService = new ArchitectService({}, catalog);
+      this.planConverter = new PlanConverter(catalog);
+      this.builderAgent = new BuilderAgent(this.registry);
 
       // Initialize Checkpoint (steering gate)
       this.checkpointHandler = new CheckpointHandler({
@@ -146,7 +141,8 @@ export class AutoSwitchOrchestrator {
       });
 
       // Initialize Tool Pruner
-      this.toolPruner = createToolPruner();
+      this.toolPruner = new ToolPruner({ max_relevant_tools: 20, min_relevance_score: 1, selection_strategy: 'hybrid' },
+        catalog.map(tool => ({ id: tool.id, name: tool.name, description: tool.description, category: tool.category })));
     } catch (error) {
       console.warn(
         'Failed to initialize orchestrator services:',
@@ -178,7 +174,7 @@ export class AutoSwitchOrchestrator {
         context: 'User-provided prompt',
       };
 
-      const planResult = await this.architectService.createPlanFromRequest(planRequest.goal);
+      const planResult = await this.architectService.createPlanFromRequest(planRequest.goal, this.signal);
 
       // Check for error response
       if ('error_code' in planResult) {
@@ -304,6 +300,7 @@ export class AutoSwitchOrchestrator {
     plan: ArchitectPlan,
     decision: CheckpointDecision,
   ): Promise<WorkflowStep[]> {
+    if (!decision.approved) throw new Error('Approval required before conversion');
     this.audit('C_CONVERSION', 'Phase C started: Plan conversion + tool injection');
 
     try {
@@ -386,6 +383,7 @@ export class AutoSwitchOrchestrator {
    * Capture complete audit trail for Phase 7 RLHF
    */
   async phaseD_ExecuteWithBuilder(steps: WorkflowStep[]): Promise<ExecutionResult> {
+    if (!this.executionContext.currentCheckpointDecision?.approved) throw new Error('Approval required before execution');
     this.audit('D_EXECUTION', 'Phase D started: Builder execution');
 
     try {
@@ -415,7 +413,8 @@ export class AutoSwitchOrchestrator {
       };
 
       // Execute with Builder
-      const result = await this.builderAgent.execute(executionWorkflow);
+      const result = await this.builderAgent.execute(executionWorkflow, { permissions: new Set(this.config.permissions),
+        approved: this.executionContext.currentCheckpointDecision?.approved ?? false, ...(this.signal ? { signal: this.signal } : {}) });
 
       this.executionContext.executionResult = result;
 
@@ -446,24 +445,31 @@ export class AutoSwitchOrchestrator {
    * Execute full orchestration pipeline: A → B → C → D
    * Coordinates all phases in sequence
    */
-  async executeFullPipeline(userPrompt: string): Promise<{
+  async executeFullPipeline(userPrompt: string, signal?: AbortSignal): Promise<{
     plan: ArchitectPlan;
     decision: CheckpointDecision;
     steps: WorkflowStep[];
     result: ExecutionResult;
   }> {
     console.log('\n' + '='.repeat(60));
+    if (this.running) throw new Error('Orchestrator already has an active execution');
+    this.running = true;
+    this.executionContext = { mode: this.config.mode, hallucinations: [], auditTrail: [],
+      planningComplete: false, validationComplete: false, conversionComplete: false, startTime: new Date() };
+    this.signal = signal;
     console.log('AUTO-SWITCH ORCHESTRATOR: Full Pipeline');
     console.log('='.repeat(60));
 
     try {
       // Phase A: Generate plan
+      signal?.throwIfAborted();
       const plan = await this.phaseA_GeneratePlan(userPrompt);
 
       // Phase B: Validate with steering
       const decision = await this.phaseB_ValidateWithSteering(plan);
 
       // Phase C: Convert and inject tools
+      signal?.throwIfAborted();
       const steps = await this.phaseC_ConvertAndInjectTools(plan, decision);
 
       // Phase D: Execute with builder
@@ -479,6 +485,9 @@ export class AutoSwitchOrchestrator {
         error instanceof Error ? error.message : String(error);
       console.error('\n❌ ORCHESTRATION FAILED:', message);
       throw error;
+    } finally {
+      this.signal = undefined;
+      this.running = false;
     }
   }
 
@@ -513,6 +522,7 @@ export class AutoSwitchOrchestrator {
           action: 'approve',
           timestamp: new Date().toISOString(),
         };
+        this.executionContext.currentCheckpointDecision = decision;
         const stepsC = await this.phaseC_ConvertAndInjectTools(planA, decision);
         const resultD = await this.phaseD_ExecuteWithBuilder(stepsC);
         context.currentPlan = planA;

@@ -1,0 +1,20 @@
+name: arc-test
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg17-trixie
+    ports:
+      - "127.0.0.1:15432:5432"
+    environment:
+      POSTGRES_USER: arc_test_admin
+      POSTGRES_PASSWORD: ${ARC_POSTGRES_ADMIN_PASSWORD:?Run the setup script first}
+      POSTGRES_DB: arc_test
+    volumes:
+      - postgres-test-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arc_test_admin -d arc_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: "no"
+volumes:
+  postgres-test-data:

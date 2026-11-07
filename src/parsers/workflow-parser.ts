@@ -7,6 +7,7 @@ import { parse as parseYaml } from 'yaml';
 import { validateWorkflowSafe } from '../schemas/workflow.schema.js';
 import { validateDependencyOrder } from '../execution/variable-resolver.js';
 import { Workflow } from '../types/index.js';
+import { readFile } from 'node:fs/promises';
 
 /**
  * Error thrown when YAML parsing or validation fails
@@ -47,7 +48,7 @@ export function parseWorkflowFromYaml(yamlContent: string, filePath: string): Wo
   // Step 2: Validate against Zod schema
   const validation = validateWorkflowSafe(parsed);
   if (!validation.success) {
-    const errorMessages = validation.error.errors
+    const errorMessages = validation.error.issues
       .map((err) => `  - ${err.path.join('.')}: ${err.message}`)
       .join('\n');
 
@@ -59,6 +60,10 @@ export function parseWorkflowFromYaml(yamlContent: string, filePath: string): Wo
   }
 
   const workflow = validation.data as Workflow;
+
+  if (new Set(workflow.steps.map(step => step.id)).size !== workflow.steps.length) {
+    throw new WorkflowParseError('Duplicate step IDs are not allowed', filePath);
+  }
 
   // Step 3: Validate dependency order (catch forward references early)
   try {
@@ -83,8 +88,7 @@ export function parseWorkflowFromYaml(yamlContent: string, filePath: string): Wo
  */
 export async function loadWorkflowFromFile(filePath: string): Promise<Workflow> {
   try {
-    const file = Bun.file(filePath);
-    const yamlContent = await file.text();
+    const yamlContent = await readFile(filePath, 'utf8');
     return parseWorkflowFromYaml(yamlContent, filePath);
   } catch (error) {
     if (error instanceof WorkflowParseError) {

@@ -1,5 +1,5 @@
 /**
- * Copilot Workflow Composer - Zod Schema Definitions
+ * Agent Runtime Controller - Zod Schema Definitions
  * Runtime validation that ensures YAML files match the TypeScript interfaces
  * Optimized for TypeScript 5.x and Bun
  */
@@ -26,13 +26,14 @@ const StepOutputConfigSchema = z
   .refine(
     (data) => {
       // If type is 'variable', name MUST be present and non-empty
+      if (data.type === 'file' && !data.path?.trim()) return false;
       if (data.type === 'variable' && !data.name) {
         return false;
       }
       return true;
     },
     {
-      message: "When output type is 'variable', 'name' field must be a non-empty string",
+      message: "Variable outputs require a name and file outputs require a path",
       path: ['name'],
     }
   );
@@ -88,12 +89,13 @@ const WorkflowStepSchemaWithSafety = z
           message: `Agent must be one of: ${COPILOT_AGENTS.join(', ')}`,
         }
       ),
+    model: z.enum(['haiku', 'sonnet']).optional(),
     prompt: z.string().min(1, 'Prompt must be a non-empty string'),
     output: StepOutputConfigSchema,
     timeout: z.number().int().positive().optional(),
     retries: z.number().int().nonnegative().optional(),
     when: z.string().optional(),
-    metadata: z.record(z.unknown()).optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
     safety: SafetyPolicySchema.optional(),
     resources: StepResourceLimitsSchema.optional(),
   })
@@ -138,7 +140,7 @@ const WorkflowSchemaWithSafety = z.object({
   description: z.string().optional(),
   steps: z.array(WorkflowStepSchemaWithSafety).min(1, 'Workflow must have at least one step'),
   config: WorkflowConfigSchemaWithSafety.optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 /**
@@ -184,7 +186,7 @@ export function validateWorkflow(data: unknown) {
 /**
  * Safe validation function - returns either the validated workflow or error details
  * Usage: const result = validateWorkflowSafe(parsedYamlData);
- *        if (!result.success) console.error(result.error.errors);
+ *        if (!result.success) console.error(result.error.issues);
  */
 export function validateWorkflowSafe(data: unknown) {
   return WorkflowSchema.safeParse(data);

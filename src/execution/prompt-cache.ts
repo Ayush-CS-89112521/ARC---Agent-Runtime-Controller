@@ -2,7 +2,7 @@
  * Prompt Cache - Caches deterministic step responses to avoid redundant API calls
  * Strategy: Hash-based cache with 10-minute TTL, gzip compression at rest
  * 
- * Location: ~/.cwc/cache/ (created on first use)
+ * Location: ~/.arc/cache/ (created on first use)
  * Format: cache-key.json.gz (gzip-compressed JSON)
  */
 
@@ -51,7 +51,7 @@ export function generateCacheKey(
  * @returns Full path to cache directory
  */
 async function getCacheDir(): Promise<string> {
-  const cacheDir = join(homedir(), '.cwc', 'cache');
+  const cacheDir = join(homedir(), '.arc', 'cache');
 
   if (!existsSync(cacheDir)) {
     await mkdir(cacheDir, { recursive: true });

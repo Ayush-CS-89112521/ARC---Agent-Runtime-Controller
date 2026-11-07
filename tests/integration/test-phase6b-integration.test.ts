@@ -1,4 +1,3 @@
-```typescript
 import { describe, it, expect, beforeEach, spyOn } from 'bun:test';
 import {
   PlanConverter,
@@ -8,7 +7,7 @@ import {
 } from '../../src/parsers/plan-converter';
 import { BuilderAgent, type ExecutionResult } from '../../src/agents/builder';
 import { CheckpointHandler, type CheckpointDecision } from '../../src/interactive/checkpoint-handler';
-import { SafetyGuardrail } from '../../src/safety/guardrails';
+import { SafetyGuardrail } from '../../src/safety/safety-guardrail';
 
 // Mock catalog for integration tests
 const MOCK_CATALOG: MCPToolSchema[] = [
@@ -65,6 +64,7 @@ describe('Phase 6b Integration Tests', () => {
     // Mock loadTool to return successful execution
     spyOn(builder as any, 'loadTool').mockImplementation(async (id: string) => {
       return {
+        id, name: id,
         execute: async () => ({ output: `Mock result for ${ id }` }),
       };
     });
@@ -106,7 +106,7 @@ describe('Phase 6b Integration Tests', () => {
       expect(approvalResult.approved).toBe(true);
 
       // Step 4: Execute with Builder
-      const executionResult = await builder.execute(conversionResult.workflow);
+      const executionResult = await builder.execute(conversionResult.workflow, { permissions: new Set(MOCK_CATALOG.map(tool => `tool:${tool.id}`)), approved: true });
       expect(executionResult.status).toBe('success');
       expect(executionResult.steps_executed).toBe(1);
     });
@@ -148,7 +148,7 @@ describe('Phase 6b Integration Tests', () => {
       expect(approvalResult.approved).toBe(true);
 
       // Should still execute with recovered tool
-      const executionResult = await builder.execute(conversionResult.workflow);
+      const executionResult = await builder.execute(conversionResult.workflow, { permissions: new Set(MOCK_CATALOG.map(tool => `tool:${tool.id}`)), approved: true });
       expect(executionResult.status).toBe('success');
     });
 
@@ -206,7 +206,7 @@ describe('Phase 6b Integration Tests', () => {
       expect(approvalResult.approved).toBe(true);
 
       // Execute
-      const executionResult = await builder.execute(conversionResult.workflow);
+      const executionResult = await builder.execute(conversionResult.workflow, { permissions: new Set(MOCK_CATALOG.map(tool => `tool:${tool.id}`)), approved: true });
       if (executionResult.status !== 'success') {
         console.error('EXECUTION FAILED:', executionResult.errors);
       }
@@ -246,7 +246,7 @@ describe('Phase 6b Integration Tests', () => {
       const hasHallucination = conversionResult.hallucinations.length > 0;
 
       // Even with hallucination, should execute
-      const executionResult = await builder.execute(conversionResult.workflow);
+      const executionResult = await builder.execute(conversionResult.workflow, { permissions: new Set(MOCK_CATALOG.map(tool => `tool:${tool.id}`)), approved: true });
       expect(executionResult.status).toBe('success');
       expect(executionResult.steps_executed).toBe(1);
     });
@@ -278,7 +278,7 @@ describe('Phase 6b Integration Tests', () => {
       }
 
       // Should still execute
-      const executionResult = await builder.execute(conversionResult.workflow);
+      const executionResult = await builder.execute(conversionResult.workflow, { permissions: new Set(MOCK_CATALOG.map(tool => `tool:${tool.id}`)), approved: true });
       expect(executionResult.status).toBe('success');
     });
   });
@@ -538,7 +538,7 @@ describe('Phase 6b Integration Tests', () => {
       const conversionResult = await converter.convert(plan);
 
       // Execute
-      const executionResult = await builder.execute(conversionResult.workflow);
+      const executionResult = await builder.execute(conversionResult.workflow, { permissions: new Set(MOCK_CATALOG.map(tool => `tool:${tool.id}`)), approved: true });
 
       // Collect audit trail
       const auditTrail = builder.getAuditTrail();
@@ -569,7 +569,7 @@ describe('Phase 6b Integration Tests', () => {
       };
 
       const conversionResult = await converter.convert(plan);
-      const executionResult = await builder.execute(conversionResult.workflow);
+      const executionResult = await builder.execute(conversionResult.workflow, { permissions: new Set(MOCK_CATALOG.map(tool => `tool:${tool.id}`)), approved: true });
 
       // Simulate Phase 5 steering input
       await builder.handleSteeringInput('step_0', {
@@ -645,7 +645,7 @@ describe('Phase 6b Integration Tests', () => {
       );
       expect(decision.approved).toBe(true);
 
-      const executionResult = await builder.execute(conversionResult.workflow);
+      const executionResult = await builder.execute(conversionResult.workflow, { permissions: new Set(MOCK_CATALOG.map(tool => `tool:${tool.id}`)), approved: true });
       expect(executionResult.status).toBe('success');
       expect(executionResult.steps_executed).toBe(4);
 
@@ -722,7 +722,7 @@ describe('Phase 6b Integration Tests', () => {
       expect(decision.approved).toBe(true);
 
       // Execute with recovered tool
-      const executionResult = await builder.execute(conversionResult.workflow);
+      const executionResult = await builder.execute(conversionResult.workflow, { permissions: new Set(MOCK_CATALOG.map(tool => `tool:${tool.id}`)), approved: true });
       expect(executionResult.status).toBe('success');
       expect(executionResult.steps_executed).toBe(4);
     });

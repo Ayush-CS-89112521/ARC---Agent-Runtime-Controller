@@ -1,5 +1,5 @@
 /**
- * Copilot Workflow Composer - Core Type Definitions
+ * Agent Runtime Controller - Core Type Definitions
  * Optimized for TypeScript 5.x and Bun
  */
 
@@ -54,7 +54,7 @@ export interface WorkflowStep {
   safety?: SafetyPolicy;
   /** Optional resource limits for this step */
   resources?: StepResourceLimits;
-  /** Optional AI model selection: 'haiku' (fast, cheap, default) or 'sonnet' (powerful, 3x cost) */
+  /** Requested Copilot model tier */
   model?: 'haiku' | 'sonnet';
   /** Enable output summarization for large outputs (>5KB). Default: true */
   compress?: boolean;
@@ -144,7 +144,11 @@ export interface StepResult {
   timestamp: Date;
   /** Number of retries attempted */
   retriesAttempted: number;
-  /** AI model used for this step: 'haiku' (default) or 'sonnet' (powerful) */
+  /** Legacy persisted model tier. */
+  requestedModelTier?: 'haiku' | 'sonnet';
+  reportedModels?: string[];
+  /** Counters supplied by the CLI. Credits and request units are not currency. */
+  copilotUsage?: { totalPremiumRequestCost?: number; totalNanoAiu?: number };
   model?: 'haiku' | 'sonnet';
   /** Estimated token count for this step's prompt and output */
   tokenEstimate?: number;
@@ -368,9 +372,9 @@ export interface WorkflowConfigWithSafety extends WorkflowConfig {
 /**
  * Final workflow execution report
  */
-export interface ExecutionReport {
+export interface ExecutionReport<W = Workflow> {
   /** Workflow that was executed */
-  workflow: Workflow;
+  workflow: W;
   /** Execution context at completion */
   context: ExecutionContext;
   /** Overall success status */

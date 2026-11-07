@@ -37,8 +37,13 @@ const mockFetchResponse = mock((url: string) => {
 
 describe('ClaudeScraper', () => {
     let scraper: ClaudeScraper;
+    let originalApiKey: string | undefined;
+    let originalGithubToken: string | undefined;
 
     beforeEach(() => {
+        originalApiKey = process.env.ANTHROPIC_API_KEY;
+        originalGithubToken = process.env.GITHUB_TOKEN;
+        process.env.ANTHROPIC_API_KEY = 'fixture-anthropic-key';
         scraper = new ClaudeScraper();
         global.fetch = mockFetchResponse as any;
 
@@ -64,9 +69,21 @@ describe('ClaudeScraper', () => {
 
     afterEach(() => {
         global.fetch = originalFetch;
+        if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+        else process.env.ANTHROPIC_API_KEY = originalApiKey;
+        if (originalGithubToken === undefined) delete process.env.GITHUB_TOKEN;
+        else process.env.GITHUB_TOKEN = originalGithubToken;
     });
 
     describe('scrapeDocumentation', () => {
+        it('does not use a GitHub credential for Anthropic requests', async () => {
+            delete process.env.ANTHROPIC_API_KEY;
+            process.env.GITHUB_TOKEN = 'fixture-github-credential';
+            const result = await scraper.scrapeDocumentation('https://example.com/docs', 'testing');
+            expect(result.description).toContain('Failed to scrape documentation');
+            expect(mockAnthropicCreate).not.toHaveBeenCalled();
+        });
+
         it('should scrape documentation and cache results', async () => {
             const url = 'https://example.com/docs';
             const topic = 'testing';

@@ -4,6 +4,7 @@
  * Starts and manages workflow executions.
  */
 
+import { randomUUID } from 'node:crypto';
 import { Client, Connection } from '@temporalio/client';
 import { executeWorkflowDurable, executeTraditionalWorkflow } from './workflows/execute-workflow.js';
 import type { WorkflowExecutionOptions, WorkflowExecutionResult } from './workflows/execute-workflow.js';
@@ -11,17 +12,19 @@ import type { WorkflowExecutionOptions, WorkflowExecutionResult } from './workfl
 export class TemporalClient {
     private client: Client | null = null;
     private connection: Connection | null = null;
+    constructor(private readonly configuration: { address?: string; namespace?: string; taskQueue?: string } = {}) {}
 
     async connect(): Promise<void> {
         if (this.client) return;
 
         try {
             this.connection = await Connection.connect({
-                address: process.env.TEMPORAL_ADDRESS || 'localhost:7233'
+                address: this.configuration.address ?? process.env.TEMPORAL_ADDRESS ?? '127.0.0.1:7233'
             });
 
             this.client = new Client({
-                connection: this.connection
+                connection: this.connection,
+                namespace: this.configuration.namespace ?? process.env.TEMPORAL_NAMESPACE ?? 'default'
             });
 
             console.log('✅ Connected to Temporal server');
@@ -52,14 +55,15 @@ export class TemporalClient {
         }
 
         try {
-            const workflowId = `workflow-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+            const workflowId = options.workflowId ?? `workflow-${randomUUID()}`;
 
             console.log(`🚀 Starting workflow: ${workflowId}`);
             console.log(`📝 Request: ${options.request}`);
 
             const handle = await this.client.workflow.start(executeWorkflowDurable, {
                 args: [options],
-                taskQueue: 'cwc-workflows',
+                taskQueue: this.configuration.taskQueue ?? process.env.TEMPORAL_TASK_QUEUE ?? 'arc-workflows',
+                workflowIdReusePolicy: 'REJECT_DUPLICATE', workflowIdConflictPolicy: 'FAIL',
                 workflowId,
                 workflowExecutionTimeout: options.timeout ? `${options.timeout}ms` : '30m'
             });
@@ -93,14 +97,15 @@ export class TemporalClient {
         }
 
         try {
-            const workflowId = `traditional-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+            const workflowId = `traditional-${randomUUID()}`;
 
             console.log(`🚀 Starting traditional workflow: ${workflowId}`);
             console.log(`📄 File: ${workflowPath}`);
 
             const handle = await this.client.workflow.start(executeTraditionalWorkflow, {
                 args: [workflowPath, options],
-                taskQueue: 'cwc-workflows',
+                taskQueue: this.configuration.taskQueue ?? process.env.TEMPORAL_TASK_QUEUE ?? 'arc-workflows',
+                workflowIdReusePolicy: 'REJECT_DUPLICATE', workflowIdConflictPolicy: 'FAIL',
                 workflowId,
                 workflowExecutionTimeout: '30m'
             });

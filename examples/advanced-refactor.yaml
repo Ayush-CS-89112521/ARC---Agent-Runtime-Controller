@@ -1,7 +1,7 @@
 version: '1.0'
 name: Advanced Code Refactoring Workflow
 description: |
-  End-to-end E2E test workflow for Copilot Workflow Composer.
+  End-to-end E2E test workflow for Agent Runtime Controller.
   Multi-step workflow that chains GitHub Copilot agents to analyze code,
   plan refactoring, and generate improved implementation.
   

@@ -46,7 +46,12 @@ describe('Builder Agent', () => {
   let builder: BuilderAgent;
 
   beforeEach(() => {
-    builder = new BuilderAgent();
+    builder = new BuilderAgent(new Map(['test-tool', 'approved-tool', 'tool-1', 'tool-2', 'custom-tool-mcp'].map(id => [id, {
+      id, name: id, execute: async () => {
+        await new Promise(resolve => setTimeout(resolve, 2));
+        return { result: `Fixture ${id}` };
+      },
+    }])));
   });
 
   describe('Basic Execution', () => {
@@ -59,7 +64,7 @@ describe('Builder Agent', () => {
         },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.status).toBe('success');
       expect(result.steps_executed).toBe(1);
@@ -75,7 +80,7 @@ describe('Builder Agent', () => {
         { id: 'step_2', name: 'Step 3' },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.status).toBe('success');
       expect(result.steps_executed).toBe(3);
@@ -88,7 +93,7 @@ describe('Builder Agent', () => {
         { id: 'step_0', name: 'Timed Step' },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.execution_time_ms).toBeGreaterThan(0);
       expect(result.step_results[0].duration_ms).toBeGreaterThan(0);
@@ -99,7 +104,7 @@ describe('Builder Agent', () => {
         { id: 'step_0', name: 'Step' },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.audit_trail_id).toBeDefined();
       expect(result.step_results[0].audit_entry_id).toBeDefined();
@@ -125,7 +130,7 @@ describe('Builder Agent', () => {
         },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.status).toBe('success');
       expect(result.steps_executed).toBe(3);
@@ -147,7 +152,7 @@ describe('Builder Agent', () => {
         },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.status).toBe('success');
       expect(result.steps_executed).toBe(3);
@@ -165,7 +170,7 @@ describe('Builder Agent', () => {
         },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       // Step 1 should be skipped due to unmet dependency
       expect(result.summary.skipped_steps).toBeGreaterThanOrEqual(0);
@@ -189,7 +194,7 @@ describe('Builder Agent', () => {
         },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.status).toBe('success');
       expect(result.step_results[0].tool_id).toBe('custom-tool-mcp');
@@ -204,7 +209,7 @@ describe('Builder Agent', () => {
         },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.step_results[0].tool_id).toBe('approved-tool');
     });
@@ -224,7 +229,7 @@ describe('Builder Agent', () => {
         },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.step_results[0].duration_ms).toBeLessThan(5000);
     });
@@ -242,7 +247,7 @@ describe('Builder Agent', () => {
         },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       // Even dangerous operations should execute in test context
       expect(result.status).toBe('success');
@@ -261,7 +266,7 @@ describe('Builder Agent', () => {
         },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.step_results[0].status).toBe('success');
     });
@@ -275,7 +280,7 @@ describe('Builder Agent', () => {
       ]);
 
       // Note: Current mock always succeeds, would need to inject error for real test
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       // In failure scenario, errors array would be populated
       if (result.errors.length > 0) {
@@ -298,7 +303,7 @@ describe('Builder Agent', () => {
         { id: 'step_1', name: 'Should Not Execute' },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       // On failure, step_1 should not execute
       if (result.status === 'failed') {
@@ -319,7 +324,7 @@ describe('Builder Agent', () => {
         { id: 'step_1', name: 'Continue After Skip' },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       // Should execute both steps even if first fails
       expect(result.steps_executed).toBeGreaterThanOrEqual(1);
@@ -332,7 +337,7 @@ describe('Builder Agent', () => {
         { id: 'step_0', name: 'Audited Step' },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.audit_trail_id).toBeDefined();
       expect(result.step_results[0].audit_entry_id).toBeDefined();
@@ -343,7 +348,7 @@ describe('Builder Agent', () => {
         { id: 'step_0', name: 'Lifecycle Test' },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
       const auditTrail = builder.getAuditTrail();
 
       // Should have entries for: step_started, tool_loaded, step_completed
@@ -362,7 +367,7 @@ describe('Builder Agent', () => {
         },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
       const auditTrail = builder.getAuditTrail();
 
       const toolLoadEntries = auditTrail.filter(e => e.event_type === 'tool_loaded');
@@ -376,7 +381,7 @@ describe('Builder Agent', () => {
     it('should accept steering input', async () => {
       const workflow = createTestWorkflow([{ id: 'step_0', name: 'Steered Step' }]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       // Simulate Phase 5 steering approval
       await builder.handleSteeringInput('step_0', {
@@ -396,7 +401,7 @@ describe('Builder Agent', () => {
     it('should log steering modifications', async () => {
       const workflow = createTestWorkflow([{ id: 'step_0', name: 'Modified Step' }]);
 
-      await builder.execute(workflow);
+      await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       // Simulate user modifying prompt via Phase 5 steering
       await builder.handleSteeringInput('step_0', {
@@ -420,7 +425,7 @@ describe('Builder Agent', () => {
         { id: 'step_2', name: 'Step 2', when: 'step_1_complete == true' },
       ]);
 
-      await builder.execute(workflow);
+      await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       // Simulate user terminating workflow via steering
       await builder.handleSteeringInput('step_1', {
@@ -445,7 +450,7 @@ describe('Builder Agent', () => {
         { id: 'step_2', name: 'Success 3' },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.summary.successful_steps).toBe(3);
       expect(result.summary.failed_steps).toBe(0);
@@ -455,7 +460,7 @@ describe('Builder Agent', () => {
     it('should provide execution status', async () => {
       const workflow = createTestWorkflow([{ id: 'step_0', name: 'Status Test' }]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(['success', 'partial', 'failed']).toContain(result.status);
     });
@@ -466,7 +471,7 @@ describe('Builder Agent', () => {
         { id: 'step_1', name: 'Result 2' },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.step_results).toHaveLength(2);
       expect(result.step_results[0]).toHaveProperty('step_id');
@@ -489,7 +494,7 @@ describe('Builder Agent', () => {
         },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.status).toBe('success');
       expect(result.steps_executed).toBe(4);
@@ -505,7 +510,7 @@ describe('Builder Agent', () => {
         { id: 'step_4', name: 'Level 5', when: 'step_3_complete == true' },
       ]);
 
-      const result = await builder.execute(workflow);
+      const result = await builder.execute(workflow, { permissions: new Set(workflow.steps.flatMap(step => step.tools.map(tool => `tool:${tool.id}`))), approved: true });
 
       expect(result.status).toBe('success');
       expect(result.steps_executed).toBe(5);

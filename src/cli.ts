@@ -1,11 +1,13 @@
 #!/usr/bin/env bun
 
 /**
- * Copilot Workflow Composer - CLI Entry Point
+ * ARC (Agent Runtime Controller) - CLI Entry Point
  * Main command-line interface for the workflow engine
  */
 
 import { resolve } from 'path';
+import { installSanitizedStreams, cancelSanitizedStreams } from '../arc/src/sanitizer.js';
+installSanitizedStreams();
 import { mkdir, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
@@ -16,7 +18,6 @@ import {
 } from './engine/workflow-engine.js';
 import { verifyGithubCopilotAuth } from './execution/github-auth.js';
 import { UIManager } from './ui/ui-manager.js';
-import { ToolDiscoveryService } from './execution/tool-discovery-resolver.js';
 import { ApiDiscoveryService } from './execution/api-discovery-service.js';
 import { CheckpointHandler } from './interactive/checkpoint-handler.js';
 
@@ -25,12 +26,12 @@ import { CheckpointHandler } from './interactive/checkpoint-handler.js';
  */
 function printUsage(): void {
   console.log(`
-Copilot Workflow Composer (CWC) v0.1.0
+ARC - Agent Runtime Controller v0.1.0
 
 Usage:
-  cwc <command> [options]
-  cwc <workflow-file> [options]
-  cwc <prompt-string> --plan [options]       (Phase 6c: Planning mode)
+  arc <command> [options]
+  arc <workflow-file> [options]
+  arc <prompt-string> --plan [options]       (Phase 6c: Planning mode)
 
 Commands:
   init <name>             Create a new workflow project (scaffolding)
@@ -71,17 +72,16 @@ Options for Phase 6c (Auto-Switch Orchestrator):
   --no-steering           Disable interactive steering during execution
 
 Examples:
-  cwc init my-workflow
-  cwc --check-auth
-  cwc ./workflow.yaml
-  cwc ./my-workflow.yaml --timeout 60000 --retries 3
-  cwc ./workflow.yaml --step-mode --no-fail-fast
-  cwc ./workflow.yaml --step-mode --allow-main-push
-  cwc "Refactor the login module to use async/await" --plan --auto-switch
-  cwc "Create a new API endpoint" --plan --auto-approve --auto-switch
+  arc init my-workflow
+  arc --check-auth
+  arc ./workflow.yaml
+  arc ./my-workflow.yaml --timeout 60000 --retries 3
+  arc ./workflow.yaml --step-mode --no-fail-fast
+  arc ./workflow.yaml --step-mode --allow-main-push
+  arc "Refactor the login module to use async/await" --plan --auto-switch
+  arc "Create a new API endpoint" --plan --auto-approve --auto-switch
 
-Documentation:
-  https://github.com/Ayush-CS-89112521/Copilot-Workflow-Composer-CWC-
+Documentation: README.md
 `);
 }
 
@@ -89,7 +89,7 @@ Documentation:
  * Print version information
  */
 function printVersion(): void {
-  console.log('Copilot Workflow Composer v0.1.0');
+  console.log('ARC - Agent Runtime Controller v0.1.0');
 }
 
 /**
@@ -306,7 +306,7 @@ steps:
   - id: say-hello
     agent: github
     prompt: |-
-      Print "Hello from Copilot Workflow Composer!"
+      Print "Hello from Agent Runtime Controller!"
       Use the 'echo' command (safe).
     timeout: 10000
     retries: 1
@@ -343,7 +343,7 @@ steps:
 # Environment variables for this workflow
 # Layer 7: Any values here would be masked in logs
 env:
-  PROJECT_NAME: "CWC Demo"
+  PROJECT_NAME: "ARC Demo"
   DEBUG: "false"
 
 # Safety configuration - demonstrates all layer controls
@@ -368,7 +368,7 @@ auditOptions:
  * Generate .env.example template
  */
 function generateEnvExample(): string {
-  return `# Environment Variables for Copilot Workflow Composer
+  return `# Environment Variables for Agent Runtime Controller
 # Copy this file to .env and fill in your actual values
 # WARNING: Never commit .env with real credentials!
 
@@ -423,7 +423,7 @@ CI=false
 function generateReadme(projectName: string): string {
   return `# ${projectName}
 
-A Copilot Workflow project powered by Copilot Workflow Composer.
+A Copilot Workflow project powered by Agent Runtime Controller.
 
 ## Quick Start
 
@@ -440,7 +440,7 @@ cat workflows/workflow.yaml
 
 ### 3. Execute the Workflow
 \`\`\`bash
-cwc workflows/workflow.yaml
+arc workflows/workflow.yaml
 \`\`\`
 
 ## Workflow Steps
@@ -495,8 +495,8 @@ gh auth status
 # Verify Copilot CLI is available
 gh copilot --version
 
-# Test with CWC
-cwc --check-auth
+# Test with ARC
+arc --check-auth
 \`\`\`
 
 **Requirements:**
@@ -516,13 +516,13 @@ cwc --check-auth
 
 ## Documentation
 
-- [Copilot Workflow Composer Docs](../../README.md)
+- [Agent Runtime Controller Docs](../../README.md)
 - [Safety Architecture](../../SAFETY_ARCHITECTURE.md)
 `;
 }
 
 /**
- * Handle cwc init command
+ * Handle arc init command
  */
 async function handleInitCommand(
   projectName: string,
@@ -589,7 +589,7 @@ async function handleInitCommand(
     ui.log(`  1. ${ui.format(`cd ${projectName}`, 'highlight')}`);
     ui.log(`  2. ${ui.format('cp .env.example .env', 'highlight')}`);
     ui.log(`  3. ${ui.format('# Edit .env with your credentials', 'highlight')}`);
-    ui.log(`  4. ${ui.format('cwc workflows/workflow.yaml', 'highlight')}`);
+    ui.log(`  4. ${ui.format('arc workflows/workflow.yaml', 'highlight')}`);
     ui.log('');
     ui.log(ui.format('📚 Learn more: See workflows/workflow.yaml and README.md', 'subtle'));
     ui.log(ui.format('🔒 All 8 safety layers are active - review SAFETY_ARCHITECTURE.md', 'subtle'));
@@ -605,7 +605,7 @@ async function handleInitCommand(
 // ─────────────────────────────────────────────────────────────────
 
 /**
- * Handle 'cwc connect <tool-name>' command
+ * Handle 'arc connect <tool-name>' command
  * Discovers tool from MCP registry and generates workflow step
  */
 async function handleConnectCommand(
@@ -630,7 +630,7 @@ async function handleConnectCommand(
       ui.error(`❌ Tool '${toolName}' not found in MCP registry`);
       ui.log('');
       ui.log(ui.format('💡 Try searching with:', 'subtle'));
-      ui.log(`   cwc --list-tools`);
+      ui.log(`   arc --list-tools`);
       process.exit(1);
     }
 
@@ -708,7 +708,7 @@ async function handleConnectCommand(
       ui.log(JSON.stringify(newStep, null, 2));
       ui.log('');
       ui.log(ui.format('❌ No workflow.yaml found. Create one with:', 'warning'));
-      ui.log(`   cwc init my-workflow`);
+      ui.log(`   arc init my-workflow`);
       process.exit(1);
     }
 
@@ -743,9 +743,9 @@ async function handleConnectCommand(
     ui.log(`      Replace '[PLACEHOLDER - describe your task here]' with your instruction`);
     if (availability.missingEnvVars.length > 0) {
       ui.log(`   2. Add required environment variables to .env`);
-      ui.log(`   3. Run: cwc ${workflowPath}`);
+      ui.log(`   3. Run: arc ${workflowPath}`);
     } else {
-      ui.log(`   2. Run: cwc ${workflowPath}`);
+      ui.log(`   2. Run: arc ${workflowPath}`);
     }
 
     ui.log('');
@@ -810,8 +810,8 @@ async function handleListApis(): Promise<void> {
 
     console.log('├────────────────────────────────────────────────┤');
     console.log('│ Usage:                                         │');
-    console.log('│   cwc --search-api <query>                     │');
-    console.log('│   cwc --api-info <api-id>                      │');
+    console.log('│   arc --search-api <query>                     │');
+    console.log('│   arc --api-info <api-id>                      │');
     console.log('└────────────────────────────────────────────────┘\n');
   } catch (error) {
     console.error(`\n❌ Failed to list APIs: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -853,7 +853,7 @@ async function handleSearchApi(query: string): Promise<void> {
     const firstId = results[0].id;
     // Truncate if too long for display
     const displayId = firstId.length > 30 ? firstId.substring(0, 27) + '...' : firstId;
-    console.log(`│   cwc --api-info ${displayId}`.padEnd(48) + '│');
+    console.log(`│   arc --api-info ${displayId}`.padEnd(48) + '│');
     console.log('└────────────────────────────────────────────────┘\n');
 
   } catch (error) {
@@ -905,7 +905,7 @@ async function handleApiInfo(id: string): Promise<void> {
 
 
 /**
- * Handle 'cwc --list-tools' command
+ * Handle 'arc --list-tools' command
  * Lists all available MCP servers from the catalog
  */
 async function handleListTools(): Promise<void> {
@@ -941,8 +941,8 @@ async function handleListTools(): Promise<void> {
 
     console.log('├────────────────────────────────────────────────┤');
     console.log('│ Usage:                                         │');
-    console.log('│   cwc --search-tool <query>                    │');
-    console.log('│   cwc --tool-info <tool-id>                    │');
+    console.log('│   arc --search-tool <query>                    │');
+    console.log('│   arc --tool-info <tool-id>                    │');
     console.log('└────────────────────────────────────────────────┘\n');
   } catch (error) {
     console.error(`\n❌ Failed to load MCP catalog: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -951,7 +951,7 @@ async function handleListTools(): Promise<void> {
 }
 
 /**
- * Handle 'cwc --search-tool <query>' command
+ * Handle 'arc --search-tool <query>' command
  * Searches for MCP servers matching the query
  */
 async function handleSearchTool(query: string): Promise<void> {
@@ -964,8 +964,8 @@ async function handleSearchTool(query: string): Promise<void> {
     if (results.length === 0) {
       console.log(`\n❌ No MCP servers found matching: "${query}"\n`);
       console.log('💡 Try:');
-      console.log('   cwc --list-tools          # See all categories');
-      console.log('   cwc --search-tool browser # Search for browser tools\n');
+      console.log('   arc --list-tools          # See all categories');
+      console.log('   arc --search-tool browser # Search for browser tools\n');
       return;
     }
 
@@ -988,7 +988,7 @@ async function handleSearchTool(query: string): Promise<void> {
 
     console.log('├────────────────────────────────────────────────┤');
     console.log('│ Get details:                                   │');
-    console.log(`│   cwc --tool-info ${results[0].id.substring(0, 28).padEnd(28)} │`);
+    console.log(`│   arc --tool-info ${results[0].id.substring(0, 28).padEnd(28)} │`);
     console.log('└────────────────────────────────────────────────┘\n');
   } catch (error) {
     console.error(`\n❌ Search failed: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -997,7 +997,7 @@ async function handleSearchTool(query: string): Promise<void> {
 }
 
 /**
- * Handle 'cwc --tool-info <id>' command
+ * Handle 'arc --tool-info <id>' command
  * Shows detailed information about a specific MCP server
  */
 async function handleToolInfo(toolId: string): Promise<void> {
@@ -1010,7 +1010,7 @@ async function handleToolInfo(toolId: string): Promise<void> {
     if (!tool) {
       console.log(`\n❌ MCP server not found: "${toolId}"\n`);
       console.log('💡 Try:');
-      console.log(`   cwc --search-tool ${toolId}\n`);
+      console.log(`   arc --search-tool ${toolId}\n`);
       return;
     }
 
@@ -1081,10 +1081,10 @@ async function handleToolInfo(toolId: string): Promise<void> {
 }
 
 /**
- * Handle 'cwc add-api <category>/<name>' command
+ * Handle 'arc add-api <category>/<name>' command
  */
 /**
- * Handle 'cwc add-api <api-id>' command
+ * Handle 'arc add-api <api-id>' command
  */
 async function handleAddApi(apiId: string): Promise<void> {
   try {
@@ -1098,8 +1098,7 @@ async function handleAddApi(apiId: string): Promise<void> {
     }
 
     // Import the tool suggestion function
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { generateStepScaffold, SuggestedTool } = require('./execution/variable-resolver.js');
+    const { generateStepScaffold } = require('./execution/variable-resolver.js');
 
     const suggestedTool = {
       id: api.id,
@@ -1141,10 +1140,16 @@ async function handleOrchestratorExecution(
 ): Promise<void> {
   const ui = UIManager.getInstance();
 
+  const { loadRuntime } = await import('./tools/runtime.js');
+  const runtime = await loadRuntime(process.cwd(), process.env.ARC_RUNTIME_CONFIG);
+  const controller = new AbortController();
+  const cancel = () => { cancelSanitizedStreams(); controller.abort(new Error('Execution cancelled')); };
+  process.once('SIGINT', cancel);
+  process.once('SIGTERM', cancel);
   try {
     // Import Phase 6 components
     const { ArchitectService } = await import('./services/architect-service.js');
-    const { convertPlanToWorkflow } = await import('./parsers/plan-converter.js');
+    const { PlanConverter } = await import('./parsers/plan-converter.js');
     const { BuilderAgent } = await import('./agents/builder.js');
 
     // Phase 2: Import orchestration bridge adapter for context conversion
@@ -1161,7 +1166,6 @@ async function handleOrchestratorExecution(
 
     // Initialize RAG and Web Scraper (if available)
     let ragContext: any = null;
-    let webScrapedDocs: any = null;
 
     try {
       // Try to load RAG knowledge base
@@ -1195,7 +1199,7 @@ async function handleOrchestratorExecution(
     }
 
     // Try web scraping if enabled and needed
-    if (process.env.ENABLE_WEB_SCRAPING === 'true' || process.env.ANTHROPIC_API_KEY) {
+    if (process.env.ENABLE_WEB_SCRAPING === 'true' && process.env.ANTHROPIC_API_KEY?.trim()) {
       try {
         const { ClaudeScraper } = await import('./scraping/claude-scraper.js');
         const scraper = new ClaudeScraper();
@@ -1206,14 +1210,14 @@ async function handleOrchestratorExecution(
 
         if (urlMatch) {
           ui.log(`🌐 Scraping documentation from ${urlMatch[0]}...`);
-          webScrapedDocs = await scraper.scrapeDocumentation(urlMatch[0], techMatch?.[0] || 'general');
+          await scraper.scrapeDocumentation(urlMatch[0], techMatch?.[0] || 'general');
           ui.log('✅ Documentation scraped successfully');
         } else if (techMatch && !ragContext?.hasContext) {
           // Only scrape if we don't have good context from RAG
           ui.log(`🌐 Searching for ${techMatch[0]} documentation...`);
           const docUrl = `https://www.npmjs.com/package/${techMatch[0].toLowerCase()}`;
           try {
-            webScrapedDocs = await scraper.scrapeDocumentation(docUrl, techMatch[0]);
+            await scraper.scrapeDocumentation(docUrl, techMatch[0]);
             ui.log('✅ Documentation found');
           } catch {
             ui.log('ℹ️  Documentation not found (continuing without it)');
@@ -1229,17 +1233,17 @@ async function handleOrchestratorExecution(
       model_tier: 'haiku',
       enable_token_counting: true,
       enable_validation: true,
-    });
+    }, runtime.registry.catalog());
 
     // Step 1: Planning Phase (unless --execute-only)
     let plan;
     if (!options.executeOnly) {
-      ui.log('📋 Phase A: Planning with Haiku...');
-      const architectResponse = await architectService.createPlanFromRequest(input);
+      ui.log('📋 Phase A: Planning with Copilot...');
+      const architectResponse = await architectService.createPlanFromRequest(input, controller.signal);
 
       if ('error_code' in architectResponse) {
         ui.error(`Planning failed: ${architectResponse.error_message}`);
-        process.exit(1);
+        throw new Error('Orchestrator execution failed');
       }
 
       plan = architectResponse;
@@ -1252,11 +1256,11 @@ async function handleOrchestratorExecution(
     let workflow; // Hoisted workflow declaration
     if (plan && !options.executeOnly) {
       ui.log('\n📝 Phase C: Converting plan to workflow...');
-      conversionResult = await convertPlanToWorkflow(plan);
+      conversionResult = await new PlanConverter(runtime.registry.catalog()).convert(plan);
 
       if (!conversionResult.success) {
         ui.error('Plan conversion failed');
-        process.exit(1);
+        throw new Error('Orchestrator execution failed');
       }
 
       workflow = conversionResult.workflow;
@@ -1267,7 +1271,7 @@ async function handleOrchestratorExecution(
       }
 
       // Step 3: Steering/Approval Phase
-      if (!options.autoApprove && !options.noSteering) {
+      if (!options.autoApprove) {
         const checkpointHandler = new CheckpointHandler({
           show_full_prompts: false,
           show_dependencies: true,
@@ -1281,9 +1285,10 @@ async function handleOrchestratorExecution(
 
         if (!decision.approved) {
           ui.error(`❌ Plan rejected by user: ${decision.user_context || 'No reason provided'}`);
-          process.exit(0);
+          return;
         }
 
+        workflow = decision.modified_workflow ?? workflow;
         ui.log('✅ Plan approved by user');
       }
     }
@@ -1292,12 +1297,12 @@ async function handleOrchestratorExecution(
     let bridge;
     if (bridgeContext && bridgeContext.initializeBridgeContext && workflow) {
       bridge = bridgeContext.initializeBridgeContext(workflow, {
-        timeout: options.timeout,
-        retries: options.retries,
-        failFast: options.failFast,
-        validateOutput: options.validateOutput,
-        autoApprove: options.autoApprove,
-        noSteering: options.noSteering,
+        ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
+        ...(options.retries !== undefined ? { retries: options.retries } : {}),
+        ...(options.failFast !== undefined ? { failFast: options.failFast } : {}),
+        ...(options.validateOutput !== undefined ? { validateOutput: options.validateOutput } : {}),
+        ...(options.autoApprove !== undefined ? { autoApprove: options.autoApprove } : {}),
+        ...(options.noSteering !== undefined ? { noSteering: options.noSteering } : {}),
       });
       ui.log('🌉 Bridge context initialized for execution');
     }
@@ -1305,8 +1310,8 @@ async function handleOrchestratorExecution(
     // Step 4: Execution Phase (Only if workflow exists)
     if (workflow) {
       ui.log('\n⚙️  Phase D: Executing workflow...');
-      const builder = new BuilderAgent();
-      const executionResult = await builder.execute(workflow);
+      const builder = new BuilderAgent(runtime.registry);
+      const executionResult = await builder.execute(workflow, { permissions: runtime.permissions, approved: true, signal: controller.signal });
 
       // Phase 2: Convert builder result to execution report using bridge
       if (bridge && bridgeContext && bridgeContext.convertBuilderResultToReport) {
@@ -1315,7 +1320,7 @@ async function handleOrchestratorExecution(
 
         if (!report.success) {
           ui.error(`Execution failed with ${report.stats.failedSteps} error(s)`);
-          process.exit(1);
+          throw new Error('Orchestrator execution failed');
         }
       } else {
         // Fallback without bridge
@@ -1325,7 +1330,7 @@ async function handleOrchestratorExecution(
 
         if (executionResult.status !== 'success') {
           ui.error(`Execution failed with ${executionResult.summary.failed_steps} error(s)`);
-          process.exit(1);
+          throw new Error('Orchestrator execution failed');
         }
       }
 
@@ -1358,7 +1363,7 @@ async function handleOrchestratorExecution(
     if (options.executeOnly) {
       ui.log('⚠️  Skipping planning phase (--execute-only specified)');
       ui.error('❌ Orchestrator mode requires a plan to execute');
-      process.exit(1);
+      throw new Error('Orchestrator execution failed');
     }
 
   } catch (error) {
@@ -1367,7 +1372,11 @@ async function handleOrchestratorExecution(
     if (process.env.DEBUG) {
       console.error(error);
     }
-    process.exit(1);
+    throw new Error('Orchestrator execution failed');
+  } finally {
+    process.removeListener('SIGINT', cancel);
+    process.removeListener('SIGTERM', cancel);
+    await runtime.close();
   }
 }
 
@@ -1393,7 +1402,7 @@ function detectInputType(input: string): { isFile: boolean; path?: string; promp
 
 /**
  * Primary Application Entry Point.
- * Orchestrates the full lifecycle of the CWC CLI:
+ * Orchestrates the full lifecycle of the ARC CLI:
  * 1. Environment and Authorization Pre-flight.
  * 2. Multi-mode argument parsing (Workflow vs Prompt).
  * 3. Planning Phase (Architect Agent) instantiation.
@@ -1562,8 +1571,8 @@ async function main(): Promise<void> {
   if (parsed.command === 'connect') {
     if (!parsed.argument) {
       console.error('❌ Error: Tool name is required for connect command\n');
-      console.error('Usage: cwc connect <tool-name>\n');
-      console.error('Example: cwc connect figma\n');
+      console.error('Usage: arc connect <tool-name>\n');
+      console.error('Example: arc connect figma\n');
       process.exit(1);
     }
     await handleConnectCommand(parsed.argument, {});
@@ -1596,13 +1605,17 @@ async function main(): Promise<void> {
   }
 
   // Traditional mode: Load and execute workflow file
+  const controller = new AbortController();
+  const cancel = () => { cancelSanitizedStreams(); controller.abort(new Error('Execution cancelled')); };
+  process.once('SIGINT', cancel);
+  process.once('SIGTERM', cancel);
   try {
     // Detect if input is a file or prompt
     const inputType = detectInputType(workflowFile);
 
     if (!inputType.isFile) {
       console.error('❌ Error: Prompt string detected but no --plan flag provided');
-      console.error('   Use: cwc "<prompt>" --plan [--auto-switch] [--auto-approve]');
+      console.error('   Use: arc "<prompt>" --plan [--auto-switch] [--auto-approve]');
       process.exit(1);
     }
 
@@ -1625,6 +1638,7 @@ async function main(): Promise<void> {
 
     // Execute the workflow with logging
     const report = await executeWorkflowWithLogging(workflow, {
+      signal: controller.signal,
       ...(parsed.timeout !== undefined && { timeout: parsed.timeout }),
       ...(parsed.retries !== undefined && { retries: parsed.retries }),
       ...(parsed.failFast !== undefined && { failFast: parsed.failFast }),
@@ -1647,6 +1661,9 @@ async function main(): Promise<void> {
     }
 
     process.exit(1);
+  } finally {
+    process.removeListener('SIGINT', cancel);
+    process.removeListener('SIGTERM', cancel);
   }
 }
 

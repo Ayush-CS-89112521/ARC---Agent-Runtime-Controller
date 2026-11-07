@@ -1,7 +1,7 @@
 /**
  * GitHub CLI Authentication Manager
  * Verifies GitHub Pro account is authenticated and Copilot CLI is available
- * Uses gh CLI's built-in authentication (no keys stored in CWC)
+ * Uses gh CLI's built-in authentication (no keys stored in ARC)
  */
 
 import { execSync } from 'child_process';
@@ -52,13 +52,13 @@ export function verifyGithubCopilotAuth(): GithubAuthStatus {
 
     // Verify Copilot CLI extension is available
     try {
-      execSync('gh copilot --version', {
+      execSync('gh copilot -- --version', {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'ignore'],
       });
     } catch {
       throw new Error(
-        'GitHub Copilot CLI extension not available. Ensure GitHub Pro is enabled and run: gh extension install github/gh-copilot'
+        'GitHub Copilot CLI unavailable via gh. Check the installed GitHub CLI and Copilot CLI.'
       );
     }
 

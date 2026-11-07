@@ -4,34 +4,50 @@
  * Provides fault-tolerant, long-running workflow execution with automatic retries.
  */
 
-import { proxyActivities } from '@temporalio/workflow';
+import { proxyActivities, ActivityCancellationType, isCancellation, CancellationScope, CancelledFailure } from '@temporalio/workflow';
 import type * as activities from '../activities/index.js';
+import type { Workflow } from '../../parsers/plan-converter.js';
+
+function rethrowCancellation(error: unknown): void {
+    if (isCancellation(error)) throw error;
+    // A crashed activity can time out while its cancellation acknowledgement is pending.
+    // The root workflow cancellation still takes precedence over an ordinary timeout result.
+    if (CancellationScope.current().consideredCancelled) throw new CancelledFailure('Workflow cancellation requested');
+}
 
 // Configure activity timeouts and retries
 const {
     generatePlanActivity,
     queryRAGActivity,
-    executeStepActivity,
     storeResultsActivity,
     scrapeDocumentationActivity
 } = proxyActivities<typeof activities>({
     startToCloseTimeout: '10 minutes',
     retry: {
-        initialInterval: '1s',
-        backoffCoefficient: 2,
-        maximumInterval: '1m',
-        maximumAttempts: 5
+        // These activities may call models or persist data; require an explicit idempotent contract before retrying.
+        maximumAttempts: 1
     }
+});
+
+const { executeStepActivity } = proxyActivities<typeof activities>({
+    startToCloseTimeout: '10 minutes', cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
+    retry: { maximumAttempts: 1 },
 });
 
 export interface WorkflowExecutionOptions {
     request: string;
+    workflowId?: string;
     timeout?: number;
     retries?: number;
     autoApprove?: boolean;
     noSteering?: boolean;
     enableRAG?: boolean;
     enableWebScraping?: boolean;
+    preparedWorkflow?: Workflow;
+    persistResults?: boolean;
+    permissionScope?: string[];
+    activityTimeoutMs?: number;
+    heartbeatTimeoutMs?: number;
 }
 
 export interface WorkflowExecutionResult {
@@ -65,10 +81,11 @@ export async function executeWorkflowDurable(
 
     try {
         // Step 1: Query RAG for context (if enabled)
-        if (options.enableRAG !== false) {
+        if (!options.preparedWorkflow && options.enableRAG !== false) {
             try {
                 context = await queryRAGActivity(options.request);
             } catch (error) {
+        rethrowCancellation(error);
                 errors.push({
                     step: 'rag-query',
                     message: `RAG query failed: ${error}`,
@@ -79,7 +96,7 @@ export async function executeWorkflowDurable(
         }
 
         // Step 2: Scrape documentation if needed (if enabled)
-        if (options.enableWebScraping && context?.needsExternalDocs) {
+        if (!options.preparedWorkflow && options.enableWebScraping && context?.needsExternalDocs) {
             try {
                 const scrapedDocs = await scrapeDocumentationActivity(
                     context.documentationUrl,
@@ -87,6 +104,7 @@ export async function executeWorkflowDurable(
                 );
                 context.externalDocs = scrapedDocs;
             } catch (error) {
+        rethrowCancellation(error);
                 errors.push({
                     step: 'web-scraping',
                     message: `Web scraping failed: ${error}`,
@@ -98,8 +116,9 @@ export async function executeWorkflowDurable(
 
         // Step 3: Generate plan with context
         try {
-            plan = await generatePlanActivity(options.request, context);
+            plan = options.preparedWorkflow ?? await generatePlanActivity(options.request, context);
         } catch (error) {
+        rethrowCancellation(error);
             errors.push({
                 step: 'planning',
                 message: `Plan generation failed: ${error}`,
@@ -108,44 +127,21 @@ export async function executeWorkflowDurable(
             throw error; // Cannot continue without a plan
         }
 
-        // Step 4: Execute each step in the plan
-        for (let i = 0; i < plan.steps.length; i++) {
-            const step = plan.steps[i];
-
-            try {
-                const result = await executeStepActivity(step, {
-                    autoApprove: options.autoApprove,
-                    noSteering: options.noSteering
-                });
-
-                results.push({
-                    stepId: step.id,
-                    stepName: step.name,
-                    status: 'success',
-                    result,
-                    duration: result.duration
-                });
-            } catch (error) {
-                const stepError = {
-                    stepId: step.id,
-                    stepName: step.name,
-                    status: 'failed',
-                    error: String(error),
-                    recoverable: step.onFailure !== 'stop_workflow'
-                };
-
-                results.push(stepError);
-                errors.push(stepError);
-
-                // Stop if step is critical
-                if (!stepError.recoverable) {
-                    break;
-                }
-            }
-        }
+        // Preserve dependency state inside the Builder activity. Never retry non-idempotent tools automatically.
+        const { executeBuilderWorkflowActivity } = proxyActivities<typeof activities>({
+            activityId: 'execute-builder',
+            startToCloseTimeout: options.activityTimeoutMs ?? 600000,
+            heartbeatTimeout: options.heartbeatTimeoutMs ?? 10000,
+            cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
+            retry: { maximumAttempts: 1 },
+        });
+        const execution = await executeBuilderWorkflowActivity(plan, { autoApprove: options.autoApprove,
+            ...(options.permissionScope ? { permissionScope: options.permissionScope } : {}) });
+        results.push(...execution.step_results.map(result => ({ ...result, duration: result.duration_ms })));
+        errors.push(...execution.errors.map(error => ({ ...error, recoverable: false })));
 
         // Step 5: Store results for future learning
-        try {
+        if (options.persistResults !== false) try {
             await storeResultsActivity({
                 request: options.request,
                 plan,
@@ -154,6 +150,7 @@ export async function executeWorkflowDurable(
                 success: errors.filter(e => !e.recoverable).length === 0
             });
         } catch (error) {
+        rethrowCancellation(error);
             errors.push({
                 step: 'storage',
                 message: `Result storage failed: ${error}`,
@@ -167,7 +164,7 @@ export async function executeWorkflowDurable(
         const failedSteps = results.filter(r => r.status === 'failed').length;
 
         return {
-            success: errors.filter(e => !e.recoverable).length === 0,
+            success: errors.filter(e => !e.recoverable).length === 0 && results.every(result => result.status !== 'failed'),
             plan,
             results,
             context,
@@ -180,6 +177,7 @@ export async function executeWorkflowDurable(
             }
         };
     } catch (error) {
+        rethrowCancellation(error);
         // Workflow-level error
         return {
             success: false,
@@ -233,6 +231,7 @@ export async function executeTraditionalWorkflow(
             }
         };
     } catch (error) {
+        rethrowCancellation(error);
         return {
             success: false,
             plan: { steps: [] },

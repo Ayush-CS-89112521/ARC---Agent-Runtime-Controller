@@ -1,16 +1,16 @@
 #!/bin/bash
-# Hero GIF Generator for CWC
-# Creates a realistic 15-second demo showing CWC's safety features
+# Hero GIF Generator for ARC
+# Creates a realistic 15-second demo showing ARC's safety features
 
 set -e
 
 GIF_OUTPUT="demo.gif"
-TEMP_VIDEO="/tmp/cwc_hero.mp4"
-TEMP_DIR="/tmp/cwc_demo_gen"
+TEMP_VIDEO="/tmp/arc_hero.mp4"
+TEMP_DIR="/tmp/arc_demo_gen"
 
 mkdir -p "$TEMP_DIR"
 
-echo "🎬 Generating CWC Hero GIF (15 seconds)..."
+echo "🎬 Generating ARC Hero GIF (15 seconds)..."
 echo ""
 
 # Create a series of PNG frames that simulate the terminal output
@@ -21,7 +21,7 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
 
-OUTPUT_DIR = "/tmp/cwc_demo_frames"
+OUTPUT_DIR = "/tmp/arc_demo_frames"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Configuration
@@ -87,7 +87,7 @@ def create_frame(text_lines, title="", delay_frames=30):
 
 # SCENE 1: Title (0-2s, 60 frames)
 create_frame([
-    ("Copilot Workflow Composer (CWC)", PURPLE),
+    ("Agent Runtime Controller (ARC)", PURPLE),
     ("", TEXT_COLOR),
     ("Type-safe, defense-in-depth workflow automation", TEXT_COLOR),
     ("", TEXT_COLOR),
@@ -96,7 +96,7 @@ create_frame([
 
 # SCENE 2: Init command (2-4s)
 create_frame([
-    ("$ cwc init demo-project", CYAN),
+    ("$ arc init demo-project", CYAN),
     ("", TEXT_COLOR),
     ("✓ Creating project structure...", GREEN),
     ("✓ Scaffolding workflows/workflow.yaml (74 lines, 8 layers)", GREEN),
@@ -104,12 +104,12 @@ create_frame([
     ("✓ Generating README.md (quick-start guide)", GREEN),
     ("✓ Setting up outputs/ directory", GREEN),
     ("", TEXT_COLOR),
-    ("cd demo-project && cwc workflows/workflow.yaml", CYAN),
+    ("cd demo-project && arc workflows/workflow.yaml", CYAN),
 ], title="Step 1: Initialize Project", delay_frames=60)
 
 # SCENE 3: Workflow execution (4-9s, 150 frames)
 create_frame([
-    ("$ cwc workflows/workflow.yaml", CYAN),
+    ("$ arc workflows/workflow.yaml", CYAN),
     ("", TEXT_COLOR),
     ("▸ Executing: Code Review Assistant", PURPLE),
     ("  Step 1/3: analyze_code", TEXT_COLOR),
@@ -151,7 +151,7 @@ create_frame([
     ("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", GREEN),
     ("", TEXT_COLOR),
     ("Ready for production:", TEXT_COLOR),
-    ("  npm install -g copilot-workflow-composer", CYAN),
+    ("  npm ci", CYAN),
 ], title="Step 4: Safety Summary", delay_frames=30)
 
 print(f"✅ Generated {frame_num} frames")
@@ -160,12 +160,12 @@ PYTHON_EOF
 python3 "$TEMP_DIR/generate_frames.py"
 
 # Count generated frames
-FRAME_COUNT=$(ls /tmp/cwc_demo_frames/frame_*.png 2>/dev/null | wc -l)
+FRAME_COUNT=$(ls /tmp/arc_demo_frames/frame_*.png 2>/dev/null | wc -l)
 echo "✅ Generated $FRAME_COUNT PNG frames"
 
 # Convert PNG sequence to video using ffmpeg
 echo "🎥 Converting frames to video..."
-ffmpeg -y -framerate 30 -i "/tmp/cwc_demo_frames/frame_%05d.png" \
+ffmpeg -y -framerate 30 -i "/tmp/arc_demo_frames/frame_%05d.png" \
     -pix_fmt yuv420p \
     -c:v libx264 \
     -preset slow \

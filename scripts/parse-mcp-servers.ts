@@ -119,7 +119,7 @@ class MCPCatalogParser {
                 platforms,
                 os,
                 official,
-                npmPackage,
+                ...(npmPackage ? { npmPackage } : {}),
                 tags
             };
         } catch (error) {
@@ -280,4 +280,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     main();
 }
 
-export { MCPCatalogParser, MCPServer, MCPCatalog };
+export { MCPCatalogParser };
+export type { MCPServer, MCPCatalog };

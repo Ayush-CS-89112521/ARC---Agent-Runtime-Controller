@@ -3,7 +3,7 @@
  * Prevents runaway processes (infinite loops, memory leaks, etc.)
  * Differentiates between "AI thinking" and "process stuck" states
  * Persists alerts to disk for audit trail and recovery
- * 
+ *
  * Layer 4: Tool-aware resource configuration
  * - Auto-tunes CPU/memory limits based on tool language and scope
  * - Adjusts timeouts by tool scope (cloud=2.0x, local=1.0x)
@@ -11,6 +11,8 @@
  */
 
 import { spawn } from 'bun';
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
 import { appendFile } from 'fs/promises';
 import { ProcessMetrics, ResourceAlert } from '../types/index.js';
 import { getRunDirectory } from '../context/context-manager.js';
@@ -80,6 +82,8 @@ export class ResourceWatchdog {
   private metrics: ProcessMetrics[] = [];
   private intervalHandle: number | null = null;
   private killed = false;
+  private baselineTimer: ReturnType<typeof setTimeout> | undefined;
+  private monitorResolve: ((alert: ResourceAlert | null) => void) | undefined;
   private alerts: ResourceAlert[] = [];
   private highResourceCount = 0;
   private outputGrowthRate = 0; // Bytes per second
@@ -106,13 +110,13 @@ export class ResourceWatchdog {
   /**
    * Auto-tune resource limits based on tool language and scope
    * Layer 4: Resource Watchdog Integration
-   * 
+   *
    * Heuristics:
    * - Interpreted languages (Python, Ruby) need more CPU
    * - Compiled languages (Go, Rust) need less CPU, less memory
    * - Cloud services get 2x timeout (network latency)
    * - Embedded services get 0.6x timeout (optimized)
-   * 
+   *
    * @internal
    */
   private autoTuneResources(config: WatchdogConfig): { memoryMB: number; cpuWarnPercent: number } {
@@ -174,17 +178,19 @@ export class ResourceWatchdog {
       this.outputGrowthRate = 0;
     }
 
+    this.cleanup();
     return new Promise((resolve) => {
+      this.monitorResolve = resolve;
       // Schedule first baseline check in 100ms
-      setTimeout(() => {
+      this.baselineTimer = setTimeout(() => {
         this.captureBaseline(stepId);
       }, 100);
 
       this.intervalHandle = setInterval(() => {
         const alert = this.checkMetrics(stepId);
         if (alert) {
-          this.cleanup();
           resolve(alert);
+          this.cleanup();
         }
       }, this.config.checkIntervalMs) as unknown as number;
     });
@@ -196,7 +202,7 @@ export class ResourceWatchdog {
    */
   public stop(): ResourceAlert[] {
     this.cleanup();
-    
+
     // Persist alerts asynchronously in background (non-blocking)
     // This ensures durability without changing the public API
     if (this.runId && this.alerts.length > 0) {
@@ -205,7 +211,7 @@ export class ResourceWatchdog {
         console.error(`⚠️  Failed to persist alerts: ${error}`);
       });
     }
-    
+
     return this.alerts;
   }
 
@@ -217,18 +223,18 @@ export class ResourceWatchdog {
   public static async loadPersistedAlerts(runId: string): Promise<ResourceAlert[]> {
     try {
       const runDir = getRunDirectory(runId);
-      const alertsFile = new URL(`file://${runDir}/alerts.jsonl`).pathname;
-      
+      const alertsFile = join(runDir, 'alerts.jsonl');
+
       const { readFile } = await import('fs/promises');
       const content = await readFile(alertsFile, 'utf-8');
-      
+
       const alerts: ResourceAlert[] = [];
       for (const line of content.split('\n')) {
         if (line.trim()) {
           alerts.push(JSON.parse(line));
         }
       }
-      
+
       return alerts;
     } catch (error) {
       // File doesn't exist or is unreadable - return empty
@@ -245,7 +251,7 @@ export class ResourceWatchdog {
     if (!this.runId) return;
 
     const runDir = getRunDirectory(this.runId);
-    const alertsFile = new URL(`file://${runDir}/alerts.jsonl`).pathname;
+    const alertsFile = join(runDir, 'alerts.jsonl');
 
     for (const alert of this.alerts) {
       const line = JSON.stringify(alert) + '\n';
@@ -343,7 +349,7 @@ export class ResourceWatchdog {
 
           if (isMemoryLeaking) {
             alertType = 'memory';
-            message = `🛑 Memory leak detected: Growing at ${(this.outputGrowthRate / 1024).toFixed(1)}KB/s`;
+            message = `🛑 Memory leak detected: RSS reached ${metrics.memoryMB.toFixed(1)}MB`;
           } else if (isOutputGrowing) {
             message = `🛑 Runaway output detected: Growing at ${(this.outputGrowthRate / 1024).toFixed(1)}KB/s`;
           } else {
@@ -423,8 +429,8 @@ export class ResourceWatchdog {
     this.killed = true;
 
     try {
-      // Kill process group (process and all children)
-      process.kill(-this.pid, 'SIGKILL');
+      // Terminate the monitored PID.
+      process.kill(this.pid, 'SIGKILL');
     } catch {
       // Process may already be dead
     }
@@ -439,13 +445,9 @@ export class ResourceWatchdog {
       this.intervalHandle = null;
     }
 
-    if (!this.killed) {
-      try {
-        process.kill(-this.pid, 'SIGTERM');
-      } catch {
-        // Process may already be dead
-      }
-    }
+    if (this.baselineTimer !== undefined) clearTimeout(this.baselineTimer);
+    this.monitorResolve?.(null);
+    this.monitorResolve = undefined;
   }
 }
 
@@ -457,14 +459,18 @@ export class ResourceWatchdog {
  */
 export function captureProcessMetrics(pid: number): ProcessMetrics {
   const timestamp = new Date();
-
-  // Try Linux /proc first (most reliable, fastest)
-  if (process.platform === 'linux') {
-    try {
-      return captureProcessMetricsLinux(pid, timestamp);
-    } catch {
-      // Fall through to ps command
-    }
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error('Invalid process ID');
+  if (pid === process.pid) {
+    const cpu = process.cpuUsage();
+    return { pid, memoryMB: process.memoryUsage().rss / 1024 / 1024,
+      cpuPercent: Math.min(100, (cpu.user + cpu.system) / (Math.max(process.uptime(), 0.001) * 10000)), timestamp };
+  }
+  if (process.platform === 'win32') {
+    const output = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `$p = Get-Process -Id ${pid} -ErrorAction Stop; @{ memoryMB = $p.WorkingSet64 / 1MB; cpuPercent = [Math]::Min(100, 100 * $p.CPU / [Math]::Max(0.001, ((Get-Date) - $p.StartTime).TotalSeconds)) } | ConvertTo-Json -Compress`],
+      { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const metrics: { memoryMB: number; cpuPercent: number } = JSON.parse(output);
+    return { pid, timestamp, ...metrics };
   }
 
   // Fallback: Use ps command (works on macOS, Linux, may work on Windows)
@@ -476,54 +482,16 @@ export function captureProcessMetrics(pid: number): ProcessMetrics {
 }
 
 /**
- * Capture metrics using /proc/[pid]/stat (Linux only)
- * @internal
- */
-function captureProcessMetricsLinux(pid: number, timestamp: Date): ProcessMetrics {
-  const fs = require('fs');
-
-  // Read memory from /proc/[pid]/status
-  let memoryMB = 0;
-  try {
-    const statusPath = `/proc/${pid}/status`;
-    const status = fs.readFileSync(statusPath, 'utf8');
-    const match = status.match(/VmRSS:\s*(\d+)\s*kB/);
-    if (match) {
-      memoryMB = parseInt(match[1], 10) / 1024;
-    }
-  } catch {
-    // VmRSS not available
-  }
-
-  // CPU is approximated based on /proc/[pid]/stat
-  // This is simplified - real CPU calculation requires two readings
-  let cpuPercent = 0;
-  try {
-    const statPath = `/proc/${pid}/stat`;
-    // stat format has fields separated by spaces
-    // Field 13 (utime) + Field 14 (stime) = CPU ticks used
-    // For now, estimate based on /proc/uptime comparison
-    if (fs.existsSync(statPath)) {
-      cpuPercent = Math.min(Math.random() * 50, 100); // Placeholder
-    }
-  } catch {
-    cpuPercent = 0;
-  }
-
-  return { pid, memoryMB, cpuPercent, timestamp };
-}
-
-/**
  * Capture metrics using ps command (cross-platform)
  * @internal
  */
 function captureProcessMetricsWithPs(pid: number, timestamp: Date): ProcessMetrics {
-  const { execSync } = require('child_process');
+
 
   try {
     // ps output: PID %CPU %MEM RSS
-    const output = execSync(`ps -p ${pid} -o pid=,pcpu=,pmem=,rss=`, {
-      encoding: 'utf8',
+    const output = execFileSync('ps', ['-p', String(pid), '-o', 'pid=,pcpu=,pmem=,rss='], {
+      encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
 
     const parts = output.split(/\s+/);
@@ -546,56 +514,42 @@ function captureProcessMetricsWithPs(pid: number, timestamp: Date): ProcessMetri
   }
 }
 
-/**
- * Create a monitored process wrapper
- * Spawns a process and monitors it with resource watchdog
- *
- * @example
- * const result = await spawnMonitored(
- *   ['gh', 'copilot', 'suggest', '--shell', prompt],
- *   { memoryMB: 512, cpuWarnPercent: 80 }
- * );
- */
+/** Drain both streams and wait for the child before releasing the watchdog. */
 export async function spawnMonitored(
   command: string[],
-  watchdogConfig: WatchdogConfig = {}
-): Promise<{
-  output: string;
-  exitCode: number;
-  alerts: ResourceAlert[];
-}> {
-  const proc = spawn(command, {
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-
+  watchdogConfig: WatchdogConfig = {},
+  options: { signal?: AbortSignal; env?: NodeJS.ProcessEnv } = {},
+): Promise<{ output: string; stderr: string; exitCode: number; alerts: ResourceAlert[] }> {
+  options.signal?.throwIfAborted();
+  const proc = spawn(command, { ...options, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
   const watchdog = new ResourceWatchdog(proc.pid, watchdogConfig);
-
-  // Start monitoring in background
-  const monitoringPromise = watchdog.start('spawned-process', 0);
-
-  // Capture output
-  let output = '';
-
-  // Buffer output chunks and update watchdog
-  const updateOutputMetrics = () => {
-    watchdog.updateOutputLength(output.length);
-  };
-
-  // Get output streams
-  const stdout = await new Response(proc.stdout).text();
-  output = stdout;
-  updateOutputMetrics();
-
-  // Don't need to handle stderr separately
-
-  // Wait for either monitoring alert or process completion
-  const exitCode = await Promise.race([monitoringPromise, proc.exited]);
-
-  const alerts = watchdog.stop();
-
-  return {
-    output,
-    exitCode: typeof exitCode === 'number' ? exitCode : 0,
-    alerts,
-  };
+  void watchdog.start('spawned-process');
+  async function read(stream: ReadableStream<Uint8Array>): Promise<string> {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let size = 0;
+    let text = '';
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) return text + decoder.decode();
+        size += value.byteLength;
+        if (size > 5 * 1024 * 1024) throw new Error('Child process output exceeded 5 MiB');
+        text += decoder.decode(value, { stream: true });
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  let alerts: ResourceAlert[];
+  let result: { output: string; stderr: string; exitCode: number };
+  try {
+    const [output, stderr, exitCode] = await Promise.all([read(proc.stdout), read(proc.stderr), proc.exited]);
+    result = { output, stderr, exitCode };
+  } finally {
+    if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL');
+    await proc.exited;
+    alerts = watchdog.stop();
+  }
+  return { ...result, alerts };
 }

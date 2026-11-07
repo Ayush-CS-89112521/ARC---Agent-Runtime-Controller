@@ -12,14 +12,6 @@ async function main() {
         console.log('✅ Connected to database');
 
         const testContent = "The Architect Agent uses GitHub Copilot CLI for planning.";
-        const testMetadata = {
-            type: 'documentation' as const,
-            source: 'test-script',
-            timestamp: new Date(),
-            tags: ['test', 'architect'],
-            confidence: 1.0
-        };
-
         console.log('Generating embedding and adding document...');
         // This triggers the local Xenova embedding generation
         await kb.addWebScrapedDocs('test-url', 'test-topic', testContent);

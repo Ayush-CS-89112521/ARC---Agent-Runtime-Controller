@@ -34,7 +34,7 @@ export class SimpleKnowledgeBase {
     protected entries: KnowledgeEntry[] = [];
 
     constructor(dataDir?: string) {
-        this.dataDir = dataDir || join(process.cwd(), '.cwc', 'knowledge');
+        this.dataDir = dataDir || join(process.cwd(), '.arc', 'knowledge');
     }
 
     async connect(): Promise<void> {

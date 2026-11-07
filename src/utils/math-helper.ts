@@ -1,7 +1,7 @@
 /**
  * Math Helper Utilities - INTENTIONALLY BROKEN FOR E2E TEST
  * This file contains functions with poor error handling
- * Used to test the Copilot Workflow Composer's refactoring workflow
+ * Used to test the Agent Runtime Controller's refactoring workflow
  */
 
 /**

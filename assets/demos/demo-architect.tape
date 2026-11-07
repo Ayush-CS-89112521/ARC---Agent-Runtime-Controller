@@ -71,7 +71,7 @@ Type "# Simulating Phase 6 Workflow"
 Sleep 300ms
 Enter
 Sleep 800ms
-Type "composer plan --request 'Create Python search CLI tool'"
+Type "arc 'Create Python search CLI tool' --plan"
 Sleep 300ms
 Enter
 Sleep 300ms

@@ -30,8 +30,15 @@ mock.module('fs', () => {
 // Mock child_process to prevent real CLI calls and timeouts
 mock.module('child_process', () => {
   return {
-    exec: (cmd: string, cb: any) => {
-      if (cmd.includes('gh copilot')) {
+    execFile: (cmd: string, args: string[], options: any, cb: any) => {
+      if (cmd === 'gh' && args[0] === 'copilot') {
+        expect(args[1]).toBe('--');
+        expect(args).toContain('--available-tools=');
+        expect(args).toContain('--disable-builtin-mcps');
+        expect(args).toContain('--deny-tool=write');
+        expect(options.env.DATABASE_URL).toBeUndefined();
+        expect(options.env.ARC_POSTGRES_ADMIN_PASSWORD).toBeUndefined();
+        expect(options.env.ARC_POSTGRES_APP_PASSWORD).toBeUndefined();
         const mockOutput = JSON.stringify({
           steps: [
             {
@@ -48,7 +55,7 @@ mock.module('child_process', () => {
           execution_order: [1]
         });
         // Simulate success
-        cb(null, { stdout: mockOutput, stderr: '' });
+        cb(null, mockOutput, '');
       } else {
         cb(new Error(`Command failed: ${cmd}`), { stdout: '', stderr: '' });
       }

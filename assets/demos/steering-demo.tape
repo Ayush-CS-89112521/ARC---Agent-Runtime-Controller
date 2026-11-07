@@ -19,7 +19,7 @@ Set Timeout 30
 # User runs the workflow with --step-mode flag
 # ============================================================================
 
-Type "cwc deploy.yaml --step-mode"
+Type "arc deploy.yaml --step-mode"
 Sleep 500ms
 Enter
 Sleep 1s

@@ -72,7 +72,7 @@ def generate_steering_demo_image():
     # Step 1: Initial command
     draw.text((40, y), "1️⃣  User runs:", fill=fg_color, font=text_font)
     y += 30
-    draw.text((60, y), "$ cwc deploy.yaml --step-mode", fill=success_color, font=text_font)
+    draw.text((60, y), "$ arc deploy.yaml --step-mode", fill=success_color, font=text_font)
     y += 35
     
     # Step 2: Dangerous proposal

@@ -98,7 +98,7 @@ class FuzzyMatcher {
     return matrix[b.length][a.length];
   }
 
-  private explainMatch(requested: string, matched: string, score: number) {
+  private explainMatch(_requested: string, _matched: string, score: number) {
     if (score > 0.85) {
       return `High confidence match (${(score * 100).toFixed(0)}% similar)`;
     } else if (score > 0.7) {
@@ -143,6 +143,8 @@ export class PlanConverter {
     // Convert steps
     const workflowSteps: WorkflowStep[] = [];
     const toolMap = new Map<string, MCPToolSchema>();
+    const stepIndices = new Map(plan.steps.map((step, index) => [step.step_id, index]));
+    if (stepIndices.size !== plan.steps.length) throw new Error('Duplicate Architect step IDs');
 
     for (let i = 0; i < plan.steps.length; i++) {
       const step = plan.steps[i];
@@ -159,7 +161,11 @@ export class PlanConverter {
 
       // Convert step to WorkflowStep
       const workflowStep = this.convertStep(
-        step,
+        { ...step, dependencies: (step.dependencies || []).map(dependency => {
+          const index = stepIndices.get(dependency);
+          if (index === undefined) throw new Error(`Unknown Architect dependency: ${dependency}`);
+          return index;
+        }) },
         i,
         toolInfo.tool,
         toolInfo.action,
@@ -173,7 +179,7 @@ export class PlanConverter {
     // Create Workflow object
     const workflow: Workflow = {
       name: plan.request_summary || 'Automated Workflow',
-      description: plan.reasoning,
+      ...(plan.reasoning !== undefined ? { description: plan.reasoning } : {}),
       steps: workflowSteps,
       metadata: {
         architect_plan_id: plan.plan_id || 'unknown',
@@ -305,12 +311,13 @@ export class PlanConverter {
         },
       ],
       prompt,
-      expected_output: step.expected_output,
-      when,
+      ...(step.input !== undefined ? { input: step.input } : {}),
+      ...(step.expected_output !== undefined ? { expected_output: step.expected_output } : {}),
+      ...(when !== undefined ? { when } : {}),
       safety: {
         pattern_scan: true,
         require_approval:
-          tool.authType !== 'none' || action === 'fallback'
+          tool.authType !== 'none' || tool.scope !== 'read-only' || action === 'fallback'
             ? true
             : false,
         timeout: this.calculateTimeout(tool),
@@ -451,7 +458,7 @@ export class PlanConverter {
 
     return {
       valid: errors.length === 0,
-      errors: errors.length > 0 ? errors : undefined,
+      ...(errors.length > 0 ? { errors } : {}),
     };
   }
 }
@@ -482,7 +489,7 @@ export async function convertPlanToWorkflow(
   return converter.convert(plan);
 }
 
-// Type definitions (matching existing CWC types)
+// Type definitions (matching existing ARC types)
 
 export interface MCPToolSchema {
   id: string;
@@ -516,6 +523,7 @@ export interface HallucinationAlert {
 }
 
 export interface WorkflowStep {
+  input?: unknown;
   id: string;
   name: string;
   description?: string;

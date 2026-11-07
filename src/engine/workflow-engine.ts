@@ -23,7 +23,7 @@ import {
   persistStepResult,
   finalizeExecution,
 } from '../context/context-manager.js';
-import { executeStepWithTimeout } from '../execution/step-executor.js';
+import { executeStepWithTimeout, saveStepOutputToFilesystem } from '../execution/step-executor.js';
 import { evaluateCondition } from '../execution/condition-evaluator.js';
 import { SafetyGuardrail, SafetyViolationError } from '../safety/safety-guardrail.js';
 import {
@@ -32,7 +32,6 @@ import {
   formatDecisionSummary,
 } from '../interactive/prompt-handler.js';
 import { UIManager } from '../ui/ui-manager.js';
-import { verifyGithubCopilotAuth, getAuthStatusMessage } from '../execution/github-auth.js';
 import { ProgressHeader } from '../ui/progress-header.js';
 
 /**
@@ -53,6 +52,9 @@ export class WorkflowExecutionError extends Error {
  * Configuration options for workflow execution
  */
 export interface WorkflowExecutionOptions {
+  signal?: AbortSignal;
+  /** Trusted host override for the Copilot command prefix. */
+  copilotCommand?: readonly string[];
   /** Override global timeout (ms) */
   timeout?: number;
   /** Override global retry count */
@@ -89,33 +91,6 @@ export async function executeWorkflow(
   const progressHeader = new ProgressHeader(workflow.steps.length, ui.getConfig().showProgress);
   const spinnerManager = ui.getSpinnerManager();
 
-  // Verify GitHub Copilot CLI authentication before executing workflow
-  try {
-    const githubAuth = verifyGithubCopilotAuth();
-    context.githubAuth = githubAuth;
-
-    // Log authentication status
-    const authMessage = getAuthStatusMessage();
-    console.log('\n' + authMessage + '\n');
-  } catch (error) {
-    const errorMsg = `GitHub authentication failed: ${error instanceof Error ? error.message : String(error)}`;
-    errors.push(errorMsg);
-
-    return {
-      workflow,
-      context,
-      success: false,
-      errors,
-      totalDuration: Date.now() - context.startTime.getTime(),
-      stats: {
-        totalSteps: workflow.steps.length,
-        successfulSteps: 0,
-        failedSteps: 0,
-      },
-      safetyScans,
-    };
-  }
-
   // Initialize safety guardrail (workflow-level policy)
   const workflowSafetyPolicy = workflow.config?.safety;
   const guardrail = new SafetyGuardrail(workflowSafetyPolicy);
@@ -148,6 +123,7 @@ export async function executeWorkflow(
   const skippedStepsArray: string[] = [];
 
   for (const step of workflow.steps) {
+    if (options?.signal?.aborted) { errors.push('Workflow cancelled'); break; }
     stepNumber++;
     try {
       // Update progress header
@@ -195,14 +171,7 @@ export async function executeWorkflow(
       }
 
       // Execute the step with timeout and pass spinnerManager
-      const result = await executeStepWithTimeout(context, step, undefined, spinnerManager);
-
-      // Record the result in context
-      recordStepResult(context, result);
-
-      if (result.success) {
-        completedSteps.push(step.id);
-      }
+      const result = await executeStepWithTimeout(context, step, undefined, spinnerManager, options?.signal, options?.copilotCommand, false);
 
       // SAFETY INTERCEPTION POINT: Scan step output BEFORE variable persistence
       let safetyChecksPassed = true;
@@ -243,6 +212,7 @@ export async function executeWorkflow(
 
             // If any violation was denied, fail the step
             if (!safetyChecksPassed) {
+              recordStepResult(context, { ...result, output: '', parsedOutput: undefined, success: false, error: errors[errors.length - 1] });
               if (context.config.failFast) {
                 break;
               }
@@ -262,6 +232,7 @@ export async function executeWorkflow(
           const safetyMsg = `Safety violation in step '${step.id}': ${safetyError.message}`;
           errors.push(safetyMsg);
           safetyChecksPassed = false;
+          recordStepResult(context, { ...result, output: '', parsedOutput: undefined, success: false, error: safetyMsg });
 
           if (context.config.failFast) {
             break;
@@ -271,6 +242,18 @@ export async function executeWorkflow(
         // Re-throw other errors
         throw safetyError;
       }
+
+      if (result.success) {
+        try {
+          options?.signal?.throwIfAborted();
+          await saveStepOutputToFilesystem(context, step, result.output);
+          completedSteps.push(step.id);
+        } catch (error) {
+          result.success = false;
+          result.error = error instanceof Error ? error.message : String(error);
+        }
+      }
+      recordStepResult(context, result);
 
       // Persist the result incrementally
       try {
@@ -308,7 +291,7 @@ export async function executeWorkflow(
 
   // Determine overall success
   const failedSteps = context.results.filter((r) => !r.success);
-  const success = failedSteps.length === 0;
+  const success = failedSteps.length === 0 && errors.length === 0 && !options?.signal?.aborted;
 
   // Finalize execution
   try {

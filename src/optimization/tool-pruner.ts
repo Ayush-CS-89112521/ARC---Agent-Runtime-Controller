@@ -35,9 +35,10 @@ export class ToolPruner {
   private catalog: FullToolEntry[] = [];
   private config: ToolPrunerConfig;
 
-  constructor(config: ToolPrunerConfig) {
+  constructor(config: ToolPrunerConfig, catalog?: FullToolEntry[]) {
     this.config = config;
-    this.loadCatalog();
+    if (catalog) this.catalog = catalog;
+    else this.loadCatalog();
   }
 
   /**
